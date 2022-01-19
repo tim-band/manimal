@@ -1,11 +1,11 @@
+#! /usr/bin/env python3
 from aicspylibczi import CziFile
 import math
 import numpy as np
 import pathlib
 from PIL import Image, ImageTk
 import queue
-import skimage.transform as sktr
-import skimage.util as skutil
+import sys
 import threading
 import tkinter as tk
 
@@ -46,13 +46,14 @@ def readImage(queue, czi: CziFile, radius : int, zoom, cx : int, cy : int):
     rect = (left, top, width, height)
     data = czi.read_mosaic(rect, scale, C=0)
     print("rect: ({0},{1},{2},{3}) scale: {4}".format(top, left, width, height, scale))
-    pil = Image.fromarray(skutil.img_as_ubyte(data[0]))
+    img = np.asarray(np.multiply(data[0], 1.0/256.0).astype(np.uint8))
+    pil = Image.fromarray(img)
     emptyQueue(queue)
     queue.put((pil, rect, zoom))
     print("read")
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master=None):
+    def __init__(self, master, fixed, sliding):
         super().__init__(master)
         self.fixedImageQueue = queue.SimpleQueue()
         self.grid(row=0, column=0, sticky="nsew")
@@ -60,8 +61,8 @@ class ManimalApplication(tk.Frame):
         master.bind('<Return>', lambda e: self.saveAndQuit())
         self.cancelButton = tk.Button(self, text="cancel", command = self.quit)
         master.bind('<Escape>', lambda e: self.quit())
-        self.fixedImage = CziFile(pathlib.Path("Ind114CPolTiledMedium.czi"))
-        self.slidingImage = CziFile(pathlib.Path("Ind114MicaTiledMedium.czi"))
+        self.fixedImage = CziFile(pathlib.Path(fixed))
+        self.slidingImage = CziFile(pathlib.Path(sliding))
         self.canvas = tk.Canvas(self)
         fibb = self.fixedImage.get_mosaic_bounding_box()
         sibb = self.slidingImage.get_mosaic_bounding_box()
@@ -250,9 +251,13 @@ class ManimalApplication(tk.Frame):
             or cropped):
             self.readCurrentLocality()
 
+if len(sys.argv) != 3:
+    print(len(sys.argv), sys.argv)
+    raise Exception("Need two inputs: ./manimal <fixed-image.czi> <sliding-image.czi>")
+
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
-app = ManimalApplication(root)
+app = ManimalApplication(root, sys.argv[1], sys.argv[2])
 app.master.title("Manimal")
 app.mainloop()

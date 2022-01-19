@@ -7,7 +7,6 @@ name = "pypi"
 aicspylibczi = "*"
 numpy = "*"
 pillow = "*"
-scikit-image = "*"
 
 [dev-packages]
 
