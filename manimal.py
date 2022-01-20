@@ -15,13 +15,6 @@ def findNoLessThan(x, xs):
             return i
     return len(xs)
 
-def emptyQueue(queue):
-    try:
-        queue.get(block=False)
-    except:
-        pass
-
-
 def readImage(queue, czi: CziFile, radius : int, zoom, cx : int, cy : int):
     """
     parameters:
@@ -46,14 +39,11 @@ def readImage(queue, czi: CziFile, radius : int, zoom, cx : int, cy : int):
     height = bottom - top
     rect = (left, top, width, height)
     data = czi.read_mosaic(rect, scale, C=0)
-    print("rect: ({0},{1},{2},{3}) scale: {4}".format(top, left, width, height, scale))
     brightness = 2.0
     rescaled = np.minimum(np.multiply(data[0], brightness/256.0), 256.0)
     img = np.asarray(rescaled.astype(np.uint8))
     pil = Image.fromarray(img)
-    emptyQueue(queue)
     queue.put((pil, rect, zoom))
-    print("read")
 
 class ZoomableImage:
     def __init__(self, cziPath):
@@ -66,6 +56,21 @@ class ZoomableImage:
 
     def centre(self):
         return (self.bbox.x + self.bbox.w // 2, self.bbox.y + self.bbox.h // 2)
+
+    def update(self):
+        count = 0
+        try:
+            while True:
+                block = count == 0 and self.pil == None
+                (i, p, z) = self.queue.get(block=block)
+                count += 1
+        except queue.Empty:
+            if count == 0:
+                return False
+        self.pil = i
+        self.pilPosition = p
+        self.zoom = z
+        return True
 
 class ImageReadRequest:
     def __init__(self, image: ZoomableImage, radius: int, zoom, cx: int, cy:int):
@@ -124,8 +129,6 @@ class TransformableImage:
         if heightPil < bottomCrop:
             bottomCrop = heightPil
             cropped = cropped or topPil + heightPil < bbox.y + bbox.h
-        print("window ({0},{1}) {2}x{3}".format(zleft, ztop, zwidth, zheight))
-        print("crop ({0},{1},{2},{3})".format(leftCrop, topCrop, rightCrop, bottomCrop))
         widthCrop = rightCrop - leftCrop
         heightCrop = bottomCrop - topCrop
         if widthCrop <= 0 or heightCrop <= 0:
@@ -140,7 +143,6 @@ class TransformableImage:
         bottomIm = min(self.zim.pil.height, math.floor(bottomCrop * self.zim.zoom / 100))
         leftIm = max(0, math.floor(leftCrop * self.zim.zoom / 100))
         rightIm = min(self.zim.pil.width, math.floor(rightCrop * self.zim.zoom / 100))
-        print("canvas ({0},{1}) image ({2},{3},{4},{5})".format(canvasW, canvasH, leftIm, topIm, rightIm, bottomIm))
         self.image = self.zim.pil.resize(
             (canvasW, canvasH),
             resample=Image.NEAREST,
@@ -183,8 +185,8 @@ class ManimalApplication(tk.Frame):
         centreSliding = self.sliding.centre()
         # rotation (in radians) then translation (in image pixels) of the sliding image
         self.rotation = 0.0
-        self.slideX = centreFixed[0] - centreSliding[0]
-        self.slideY = centreFixed[1] - centreSliding[1]
+        self.slideX = centreSliding[0] - centreFixed[0]
+        self.slideY = centreSliding[1] - centreFixed[1]
         # zoom percent
         self.zoomLevels = [5, 10, 25, 50, 100, 200, 400]
         self.zoom = 100
@@ -219,11 +221,16 @@ class ManimalApplication(tk.Frame):
         self.readCurrentLocality()
         self.createCanvas()
         self.updateCanvas()
+        self.tick()
+
+    def tick(self):
+        if self.fixed.update() or self.sliding.update():
+            self.updateCanvas()
+        self.after(1000, self.tick)
+
 
     def readCurrentLocality(self):
-        print("read")
         if not self.requestQueue.empty():
-            print("busy")
             return
         radius = self.canvas.winfo_width() + self.canvas.winfo_height()
         self.requestQueue.put(ImageReadRequest(
@@ -237,10 +244,9 @@ class ManimalApplication(tk.Frame):
             self.sliding,
             math.floor(radius * 100 / self.zoom),
             self.zoom,
-            self.panX - self.slideX,
-            self.panY - self.slideY
+            self.panX + self.slideX,
+            self.panY + self.slideY
         ))
-        print("go")
 
     def saveAndQuit(self):
         print("Save!")
@@ -268,7 +274,6 @@ class ManimalApplication(tk.Frame):
             if len(self.zoomLevels) <= zoomIndex + 1:
                 return
             self.zoom = self.zoomLevels[zoomIndex + 1]
-        print(zoomIndex,self.zoom)
         ds = z0 - 100 / self.zoom
         self.panX += ds * mx
         self.panY += ds * my
@@ -277,10 +282,12 @@ class ManimalApplication(tk.Frame):
     def dragStart(self, x, y):
         self.pan0X = self.panX
         self.pan0Y = self.panY
+        self.slide0X = self.slideX
+        self.slide0Y = self.slideY
         self.dragOriginX = x
         self.dragOriginY = y
 
-    def dragMove(self, x, y):
+    def rightDragMove(self, x, y):
         # we want p0 + m0/s = p1 + m1/s
         # => p1 = p0 + m0/s - m1/s
         # if x is the actual click position and c is the canvas centre then
@@ -289,7 +296,9 @@ class ManimalApplication(tk.Frame):
         self.panY = math.floor(self.pan0Y + (self.dragOriginY - y) * 100 / self.zoom + 0.5)
         self.updateCanvas()
 
-    def rightDragMove(self, x, y):
+    def dragMove(self, x, y):
+        self.slideX = math.floor(self.slide0X + (self.dragOriginX - x) * 100 / self.zoom + 0.5)
+        self.slideY = math.floor(self.slide0Y + (self.dragOriginY - y) * 100 / self.zoom + 0.5)
         self.updateCanvas()
 
     def createCanvas(self):
@@ -302,30 +311,16 @@ class ManimalApplication(tk.Frame):
         # sliding image: rotate -> slide -> -pan -> zoom -> crop
         # = rotate + slide -> -pan -> crop (antizoomed canvas frame) -> zoom
         # = rotate + slide -> crop (antizoom canvas frame + pan) -> zoom
-        if self.fixed.pil == None or not self.fixed.queue.empty():
-            (i, p, z) = self.fixed.queue.get()
-            while not self.fixed.queue.empty():
-                (i, p, z) = self.fixed.queue.get()
-            print("read new fixed image", z)
-            self.fixed.pil = i
-            self.fixed.pilPosition = p
-            self.fixed.zoom = z
-        if self.sliding.pil == None or not self.sliding.queue.empty():
-            (i, p, z) = self.sliding.queue.get()
-            while not self.sliding.queue.empty():
-                (i, p, z) = self.sliding.queue.get()
-            print("read new sliding image", z)
-            self.sliding.pil = i
-            self.sliding.pilPosition = p
-            self.sliding.zoom = z
+        self.fixed.update()
+        self.sliding.update()
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
         tim = TransformableImage(self.fixed, self.panX, self.panY, self.zoom)
         image = tim.get(width, height)
         sim = TransformableImage(
             self.sliding,
-            self.panX - self.slideX,
-            self.panY - self.slideY,
+            self.panX + self.slideX,
+            self.panY + self.slideY,
             self.zoom
         )
         slider = sim.get(width, height)
@@ -336,7 +331,6 @@ class ManimalApplication(tk.Frame):
             self.readCurrentLocality()
 
 if len(sys.argv) != 3:
-    print(len(sys.argv), sys.argv)
     raise Exception("Need two inputs: ./manimal <fixed-image.czi> <sliding-image.czi>")
 
 root = tk.Tk()
