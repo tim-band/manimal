@@ -87,18 +87,51 @@ def readImages(inputQueue):
         readImage(i.queue, i.czi, i.radius, i.zoom, i.cx, i.cy)
 
 class TransformableImage:
-    def __init__(self, zim: ZoomableImage, cx: int, cy: int, zoom):
+    def __init__(self, zim: ZoomableImage, cx: int, cy: int, zoom, angle=0, translation=(0,0)):
         self.zim = zim
         self.cx = cx
         self.cy = cy
         self.zoom = zoom
+        self.angle = angle
+        self.translation = translation
 
     def getCropped(self, width, height):
-        # position on the fixed background
+        cx = self.cx
+        cy = self.cy
+        (leftPil, topPil, widthPil, heightPil) = self.zim.pilPosition
+        pil = self.zim.pil
+        if self.angle != 0:
+            # we need to rotate the loaded portion by angle degrees
+            # and transform (cx,cy) by rotating it the same amount
+            pil = pil.rotate(self.angle)
+            th = self.angle * math.pi / 180
+            s = math.sin(th)
+            c = math.cos(th)
+            # The centre of the pil image in its own coordinates
+            pilCx = leftPil + widthPil / 2
+            pilCy = topPil + heightPil / 2
+            # But now pil has expanded
+            widthPil = pil.width
+            heightPil = pil.height
+            leftPil = pilCx - widthPil / 2
+            topPil = pilCy - heightPil / 2
+            # The centre of the pil image after being transformed into world co-ordinates
+            px = pilCx * c + pilCy * s + self.translation[0]
+            py = pilCy * c - pilCx * s + self.translation[1]
+            # (x,y) is the position relative to the centre of the image
+            x = cx - px
+            y = cy - py
+            # and finally put this into the (leftPil, topPil, widthPil, heightPil) co-ordinates
+            cx = pilCx + x
+            cy = pilCy + y
+        else:
+            cx -= self.translation[0]
+            cy -= self.translation[1]
+        # position on the image
         zwidth = (width * 100) / self.zoom
         zheight = (height * 100) / self.zoom
-        zleft = math.floor(self.cx - zwidth / 2 + 0.5)
-        ztop = math.floor(self.cy - zheight / 2 + 0.5)
+        zleft = math.floor(cx - zwidth / 2 + 0.5)
+        ztop = math.floor(cy - zheight / 2 + 0.5)
         zwidth = math.floor(zwidth)
         zheight = math.floor(zheight)
         # position of cropped image on screen
@@ -107,25 +140,21 @@ class TransformableImage:
         # crops in background pixels
         bbox = self.zim.bbox
         cropped = False
-        leftPil = self.zim.pilPosition[0]
         leftCrop = zleft - leftPil
         if leftCrop < 0:
             offsetX = -leftCrop
             leftCrop = 0
             cropped = bbox.x < leftPil
-        topPil = self.zim.pilPosition[1]
         topCrop = ztop - topPil
         if topCrop < 0:
             offsetY = -topCrop
             topCrop = 0
             cropped = cropped or bbox.y < topPil
         rightCrop = zleft + zwidth - leftPil
-        widthPil = self.zim.pilPosition[2]
         if widthPil < rightCrop:
             rightCrop = widthPil
             cropped = cropped or leftPil + widthPil < bbox.x + bbox.w
         bottomCrop = ztop + zheight - topPil
-        heightPil = self.zim.pilPosition[3]
         if heightPil < bottomCrop:
             bottomCrop = heightPil
             cropped = cropped or topPil + heightPil < bbox.y + bbox.h
@@ -140,10 +169,10 @@ class TransformableImage:
         canvasH = math.ceil(heightCrop * self.zoom / 100)
         # crops in extracted image pixels
         topIm = max(0, math.floor(topCrop * self.zim.zoom / 100))
-        bottomIm = min(self.zim.pil.height, math.floor(bottomCrop * self.zim.zoom / 100))
+        bottomIm = min(pil.height, math.floor(bottomCrop * self.zim.zoom / 100))
         leftIm = max(0, math.floor(leftCrop * self.zim.zoom / 100))
-        rightIm = min(self.zim.pil.width, math.floor(rightCrop * self.zim.zoom / 100))
-        self.image = self.zim.pil.resize(
+        rightIm = min(pil.width, math.floor(rightCrop * self.zim.zoom / 100))
+        self.image = pil.resize(
             (canvasW, canvasH),
             resample=Image.NEAREST,
             box=(leftIm, topIm, rightIm, bottomIm)
@@ -172,11 +201,13 @@ class TransformableImage:
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed, sliding):
         super().__init__(master)
-        self.grid(row=0, column=0, sticky="nsew")
-        self.okButton = tk.Button(self, text="OK", command = self.saveAndQuit)
+        self.grid(row=0, column=0, sticky='nsew')
+        self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
         master.bind('<Return>', lambda e: self.saveAndQuit())
-        self.cancelButton = tk.Button(self, text="cancel", command = self.quit)
+        self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
         master.bind('<Escape>', lambda e: self.quit())
+        self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.togglePin)
+        master.bind('p', lambda e: self.togglePin())
         self.fixed = ZoomableImage(pathlib.Path(fixed))
         self.sliding = ZoomableImage(pathlib.Path(sliding))
         self.canvas = tk.Canvas(self)
@@ -184,9 +215,10 @@ class ManimalApplication(tk.Frame):
         centreFixed = self.fixed.centre()
         centreSliding = self.sliding.centre()
         # rotation (in radians) then translation (in image pixels) of the sliding image
+        # Order of operations for sliding layer: flip -> rotate -> translate
         self.rotation = 0.0
-        self.slideX = centreSliding[0] - centreFixed[0]
-        self.slideY = centreSliding[1] - centreFixed[1]
+        self.slideX = centreFixed[0] - centreSliding[0]
+        self.slideY = centreFixed[1] - centreSliding[1]
         # zoom percent
         self.zoomLevels = [5, 10, 25, 50, 100, 200, 400]
         self.zoom = 100
@@ -197,12 +229,14 @@ class ManimalApplication(tk.Frame):
         # co-ordinate pair about which we are rotating if we are in
         # "pinned" mode.
         self.pin = None
-        self.okButton.grid(column=0, row=1, sticky="s")
+        self.okButton.grid(column=2, row=1, sticky="s")
         self.cancelButton.grid(column=1, row=1, sticky="s")
-        self.canvas.grid(column=0, columnspan=2, row=0, sticky="nsew")
+        self.pinButton.grid(column=0, row=1, sticky="s")
+        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=0)
         self.canvasPin = None
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
         self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
@@ -211,6 +245,7 @@ class ManimalApplication(tk.Frame):
         self.canvas.bind("<MouseWheel>", lambda e: self.zoomChange(e.delta, e.x, e.y))
         self.canvas.bind("<Button-4>", lambda e: self.zoomChange(-120, e.x, e.y))
         self.canvas.bind("<Button-5>", lambda e: self.zoomChange(120, e.x, e.y))
+        self.canvas.bind("<Motion>", self.motion)
         self.requestQueue = queue.SimpleQueue()
         self.readThread = threading.Thread(
             target=readImages, args=(self.requestQueue,)
@@ -228,6 +263,23 @@ class ManimalApplication(tk.Frame):
             self.updateCanvas()
         self.after(1000, self.tick)
 
+    def togglePin(self):
+        c = self.pinButton.config
+        if c('relief')[-1] == 'raised':
+            c(relief='sunken')
+            self.canvas.itemconfigure(self.pinId, state='normal')
+        else:
+            c(relief='raised')
+            self.canvas.itemconfigure(self.pinId, state='hidden')
+            self.pin = None
+
+    def isPinIn(self):
+        return self.pinButton.config('relief')[-1] == 'sunken'
+
+    def motion(self, e):
+        if self.pin != None or not self.isPinIn():
+            return
+        self.updateCanvas(pin=(e.x, e.y))
 
     def readCurrentLocality(self):
         if not self.requestQueue.empty():
@@ -240,12 +292,17 @@ class ManimalApplication(tk.Frame):
             self.panX,
             self.panY
         ))
+        r = self.rotation * math.pi / 180
+        s = math.sin(r)
+        c = math.cos(r)
+        x = self.panX - self.slideX
+        y = self.panY - self.slideY
         self.requestQueue.put(ImageReadRequest(
             self.sliding,
             math.floor(radius * 100 / self.zoom),
             self.zoom,
-            self.panX + self.slideX,
-            self.panY + self.slideY
+            c * x - s * y,
+            c * y + s * x
         ))
 
     def saveAndQuit(self):
@@ -279,13 +336,29 @@ class ManimalApplication(tk.Frame):
         self.panY += ds * my
         self.updateCanvas()
 
+    def screenToFixed(self, x, y):
+        fx = math.floor((x - self.canvas.winfo_width() / 2) * self.zoom / 100 + 0.5)
+        fy = math.floor((y - self.canvas.winfo_height() / 2) * self.zoom / 100 + 0.5)
+        return (self.panX + fx, self.panY + fy)
+
+    def screenToPinOffset(self, x, y):
+        (fx,fy) = self.screenToFixed(x, y)
+        (px,py) = self.pin
+        return (fx - px, fy - py)
+
     def dragStart(self, x, y):
         self.pan0X = self.panX
         self.pan0Y = self.panY
         self.slide0X = self.slideX
         self.slide0Y = self.slideY
+        self.rotation0 = self.rotation
         self.dragOriginX = x
         self.dragOriginY = y
+        if self.pin == None and self.isPinIn():
+            self.pin = self.screenToFixed(x, y)
+            self.updateCanvas()
+        if self.pin:
+            self.pinOffset = self.screenToPinOffset(x, y)
 
     def rightDragMove(self, x, y):
         # we want p0 + m0/s = p1 + m1/s
@@ -297,14 +370,30 @@ class ManimalApplication(tk.Frame):
         self.updateCanvas()
 
     def dragMove(self, x, y):
-        self.slideX = math.floor(self.slide0X + (self.dragOriginX - x) * 100 / self.zoom + 0.5)
-        self.slideY = math.floor(self.slide0Y + (self.dragOriginY - y) * 100 / self.zoom + 0.5)
+        if self.pin == None:
+            self.slideX = math.floor(self.slide0X - (self.dragOriginX - x) * 100 / self.zoom + 0.5)
+            self.slideY = math.floor(self.slide0Y - (self.dragOriginY - y) * 100 / self.zoom + 0.5)
+        else:
+            # To rotate S around p:
+            # S(Rx+t - p) + p = SRx + S(t-p)+p
+            (px,py) = self.pinOffset
+            (nx,ny) = self.screenToPinOffset(x, y)
+            r = math.atan2(py,px) - math.atan2(ny,nx)
+            self.rotation = self.rotation0 + r * 180 / math.pi
+            sx = self.slide0X - px
+            sy = self.slide0Y - py
+            s = math.sin(r)
+            c = math.cos(r)
+            self.slideX = px + c * sx + s * sy
+            self.slideY = py + c * sy - s * sx
         self.updateCanvas()
 
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
+        self.pinId = self.canvas.create_polygon((0,0,0,1,1,1,1,0),
+            fill='white', joinstyle='miter', outline='black', state='hidden')
 
-    def updateCanvas(self):
+    def updateCanvas(self, pin=None):
         # fixed image: -pan -> zoom -> crop
         # = -pan -> crop (antizoomed canvas frame) -> zoom
         # = crop (antizoomed canvas frame + pan) -> zoom
@@ -319,12 +408,22 @@ class ManimalApplication(tk.Frame):
         image = tim.get(width, height)
         sim = TransformableImage(
             self.sliding,
-            self.panX + self.slideX,
-            self.panY + self.slideY,
-            self.zoom
+            self.panX,
+            self.panY,
+            self.zoom,
+            self.rotation,
+            (self.slideX, self.slideY)
         )
         slider = sim.get(width, height)
         image = Image.blend(image, slider, 0.5)
+        if pin != None:
+            (x,y) = pin
+            self.canvas.coords(self.pinId, (x,y,x+5,y-15,x+15,y-5))
+        elif self.pin != None:
+            (x,y) = self.pin
+            x = math.floor((x - self.panX) * 100 / self.zoom + width/2)
+            y = math.floor((y - self.panY) * 100 / self.zoom + height/2)
+            self.canvas.coords(self.pinId, (x,y,x-5,y-15,x+5,y-15))
         self.image = ImageTk.PhotoImage(image)
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
         if tim.outdated:
