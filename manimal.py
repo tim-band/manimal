@@ -76,10 +76,15 @@ class Screen:
         return self.canvas.winfo_height()
 
     def toWorld(self, x, y):
+        x -= self.width() / 2
+        y -= self.height() / 2
         return (x * self.scale + self.panX, y * self.scale + self.panY)
 
     def fromWorld(self, x, y):
-        return ((x - self.panX) / self.scale, (y - self.panY) / self.scale)
+        return (
+            (x - self.panX) / self.scale + self.width() / 2,
+            (y - self.panY) / self.scale + self.height() / 2
+        )
 
     def dragStart(self, x, y):
         self.dragStartPoint = self.toWorld(x, y)
@@ -290,10 +295,17 @@ class ZoomableImage:
             self.angle = self.angle0 + angle
 
     def getCropped(self, screen: Screen):
-        (cx, cy) = self.fromWorld(screen.panX, screen.panY)
         (leftPil, topPil, widthPil, heightPil) = self.pilPosition
         px = leftPil + widthPil / 2
         py = topPil + heightPil / 2
+        # Screen centre is at inv(Zs)(Pv - T - RFPs) in
+        # flipped rotated cached image co-ordinates
+        # which is the centre of the cached portion mapped to world
+        # co-ordinates, subtracted from the screen position and scaled
+        # to cached image co-ordinates
+        (wx, wy) = self.toWorld(px, py)
+        cx = (screen.panX - wx) / self.scale
+        cy = (screen.panY - wy) / self.scale
         pil = self.pil
         # create rotated flipped cached portion
         if self.flip < 0:
@@ -305,9 +317,10 @@ class ZoomableImage:
         heightPil = pil.height * self.scale
         leftPil = math.floor(px - widthPil / 2 + 0.5)
         topPil = math.floor(py - heightPil / 2 + 0.5)
-        # position on the image
-        zwidth = screen.width() * screen.scale
-        zheight = screen.height() * screen.scale
+        # position on the image (flipped rotated cached co-ordinates)
+        magnification = self.scale / screen.scale
+        zwidth = screen.width() / magnification
+        zheight = screen.height() / magnification
         zleft = math.floor(cx - zwidth / 2 + 0.5)
         ztop = math.floor(cy - zheight / 2 + 0.5)
         zwidth = math.floor(zwidth)
@@ -315,40 +328,36 @@ class ZoomableImage:
         # position of cropped image on screen
         offsetX = 0
         offsetY = 0
-        # crops in image pixels
-        leftCrop = zleft - leftPil
+        phw = math.floor(pil.width / 2 + 0.5)
+        phh = math.floor(pil.height / 2 + 0.5)
+        leftCrop = zleft + phw
+        topCrop = ztop + phh
+        rightCrop = zleft + zwidth + phw
+        bottomCrop = ztop + zheight + phh
         if leftCrop < 0:
             offsetX = -leftCrop
             leftCrop = 0
-        topCrop = ztop - topPil
         if topCrop < 0:
             offsetY = -topCrop
             topCrop = 0
-        rightCrop = zleft + zwidth - leftPil
-        if widthPil < rightCrop:
-            rightCrop = widthPil
-        bottomCrop = ztop + zheight - topPil
-        if heightPil < bottomCrop:
-            bottomCrop = heightPil
+        if pil.width < rightCrop:
+            rightCrop = pil.width
+        if pil.height < bottomCrop:
+            bottomCrop = pil.height
         widthCrop = rightCrop - leftCrop
         heightCrop = bottomCrop - topCrop
         if widthCrop <= 0 or heightCrop <= 0:
             return None
         # width and height in screen pixels
-        canvasX = math.floor(offsetX / screen.scale)
-        canvasY = math.floor(offsetY / screen.scale)
-        canvasW = math.ceil(widthCrop / screen.scale)
-        canvasH = math.ceil(heightCrop / screen.scale)
-        # crops in extracted image pixels
-        topIm = max(0, math.floor(topCrop / self.scale))
-        bottomIm = min(heightPil, math.floor(bottomCrop / self.scale))
-        leftIm = max(0, math.floor(leftCrop / self.scale))
-        rightIm = min(widthPil, math.floor(rightCrop / self.scale))
+        canvasX = math.floor(offsetX * magnification)
+        canvasY = math.floor(offsetY * magnification)
+        canvasW = math.ceil(widthCrop * magnification)
+        canvasH = math.ceil(heightCrop * magnification)
         return {
             'image': pil.resize(
                 (canvasW, canvasH),
                 resample=Image.NEAREST,
-                box=(leftIm, topIm, rightIm, bottomIm)
+                box=(leftCrop, topCrop, rightCrop, bottomCrop)
             ),
             'x': canvasX,
             'y': canvasY
