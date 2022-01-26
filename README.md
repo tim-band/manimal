@@ -2,8 +2,30 @@
 
 Manual Image Alignment tool
 
-So far you can just slide a big CZI (Carl Zeiss Image) around;
-no alignment possible.
+```
+./manimal.py fixed.czi sliding.czi
+```
+
+Manimal allows you to align two large CZI images by eye.
+
+Use a left-click drag to translate the sliding image around. Click the
+"Pin" button to get a pin, then click the image to place the pin.
+Left-click drags now rotate the sliding image around the pin. Click
+the "Pin" button again in order to return to translating the image.
+
+Use a right-click drag to move the enitre view around, or roll
+the scroll wheel to zoom in and out.
+
+Click "OK" to output the matrix mapping fixed image points
+(in micrometers) to sliding image points (in micrometers)
+and close the tool.
+
+Click "cancel" to close the tool without outputting the matrix.
+
+The tool cannot currently cope with non-square pixels, or
+fixed and sliding images with different scalings.
+
+The tool can cope with multi-gigabyte images.
 
 # The mathematics
 

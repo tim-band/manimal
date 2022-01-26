@@ -114,6 +114,14 @@ class Screen:
 class ZoomableImage:
     def __init__(self, cziPath, flip=False):
         self.czi = CziFile(pathlib.Path(cziPath))
+        pixelSizeElement = self.czi.meta.find('./Metadata/ImageScaling/ImagePixelSize')
+        if pixelSizeElement == None:
+            raise Exception("No pixel size in metadata")
+        pixelSizeText = pixelSizeElement.text
+        (xscale, yscale) = pixelSizeText.split(',')
+        if xscale != yscale:
+            raise Exception("Cannot handle non-square pixels yet, sorry!")
+        self.pixelSize = float(xscale)
         self.queue = queue.SimpleQueue()
         self.bbox = self.czi.get_mosaic_bounding_box()
         self.pil = None
@@ -163,6 +171,20 @@ class ZoomableImage:
             c * x - s * y,
             c * y + s * x
         )
+
+    def getMicrometerMatrix(self):
+        """
+        Returns the mapping TO this image (in micrometers) FROM world
+        co-ordinates (in micrometers).
+        """
+        x = -self.tx * self.pixelSize
+        y = -self.ty * self.pixelSize
+        s = math.sin(self.angle)
+        c = math.cos(self.angle)
+        return [
+            [c, -s, c * x - s * x],
+            [s, c, s * x + c * y],
+        ]
 
     def toScreen(self, screen: Screen, x, y):
         """
@@ -486,8 +508,8 @@ class ManimalApplication(tk.Frame):
         self.updateCanvas(pin=(e.x, e.y))
 
     def saveAndQuit(self):
-        print("Save!")
-        #... save
+        for row in self.sliding.getMicrometerMatrix():
+            print(','.join(map(str, row)))
         super().quit()
 
     def isPin(self, x, y):
@@ -527,12 +549,6 @@ class ManimalApplication(tk.Frame):
             fill='white', joinstyle='miter', outline='black', state='hidden')
 
     def updateCanvas(self, pin=None):
-        # fixed image: -pan -> zoom -> crop
-        # = -pan -> crop (antizoomed canvas frame) -> zoom
-        # = crop (antizoomed canvas frame + pan) -> zoom
-        # sliding image: rotate -> slide -> -pan -> zoom -> crop
-        # = rotate + slide -> -pan -> crop (antizoomed canvas frame) -> zoom
-        # = rotate + slide -> crop (antizoom canvas frame + pan) -> zoom
         self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.fixed.update()
         self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
