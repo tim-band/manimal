@@ -445,8 +445,6 @@ class ManimalApplication(tk.Frame):
         # centres of the images
         centreFixed = self.fixed.centre()
         centreSliding = self.sliding.centre()
-        # rotation (in radians) then translation (in image pixels) of the sliding image
-        # Order of operations for sliding layer: flip -> rotate -> translate
         self.sliding.setTranslation(
             centreFixed[0] - xflip * centreSliding[0],
             centreFixed[1] - centreSliding[1]
@@ -461,7 +459,6 @@ class ManimalApplication(tk.Frame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
-        self.grid_rowconfigure(2, weight=0)
         self.pinId = None
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
         self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
@@ -567,12 +564,225 @@ class ManimalApplication(tk.Frame):
         self.image = ImageTk.PhotoImage(image)
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
-if len(sys.argv) != 3:
-    raise Exception("Need two inputs: ./manimal <fixed-image.czi> <sliding-image.czi>")
+class PoiApplication(tk.Frame):
+    def __init__(self, master, fixed):
+        super().__init__(master)
+        self.grid(row=0, column=0, sticky='nsew')
+        self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
+        master.bind('<Return>', lambda e: self.saveAndQuit())
+        self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
+        master.bind('<Escape>', lambda e: self.quit())
+        self.mode = tk.IntVar()
+        self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
+        self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
+        self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
+        self.fixed = ZoomableImage(pathlib.Path(fixed))
+        self.canvas = tk.Canvas(self)
+        self.screen = Screen(self.canvas)
+        centreFixed = self.fixed.centre()
+        # zoom 100/percent
+        self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
+        self.screen.setTranslation(centreFixed[0], centreFixed[1])
+        self.okButton.grid(column=4, row=1, sticky="s")
+        self.cancelButton.grid(column=3, row=1, sticky="s")
+        self.moveButton.grid(column=0, row=1, sticky="s")
+        self.poiButton.grid(column=1, row=1, sticky="s")
+        self.regButton.grid(column=2, row=1, sticky="s")
+        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
+        self.grid_columnconfigure(3, weight=0)
+        self.grid_columnconfigure(4, weight=0)
+        self.grid_rowconfigure(0, weight=1)
+        self.regPins = set([])
+        self.poiPins = set([])
+        self.pinCoords = {}
+        self.draggingPin = None
+        self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
+        self.canvas.bind("<ButtonRelease-1>", lambda e: self.dragEnd(e.x, e.y))
+        self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
+        self.canvas.bind("<Button-3>", lambda e: self.rightDragStart(e.x, e.y))
+        self.canvas.bind("<B3-Motion>", lambda e: self.rightDragMove(e.x, e.y))
+        self.canvas.bind("<MouseWheel>", lambda e: self.zoomChange(e.delta, e.x, e.y))
+        self.canvas.bind("<Button-4>", lambda e: self.zoomChange(-120, e.x, e.y))
+        self.canvas.bind("<Button-5>", lambda e: self.zoomChange(120, e.x, e.y))
+        self.canvas.bind("<Motion>", self.motion)
+        self.requestQueue = queue.SimpleQueue()
+        self.readThread = threading.Thread(
+            target=readImages, args=(self.requestQueue,)
+        )
+        self.readThread.daemon = True
+        self.readThread.start()
+        self.update_idletasks()
+        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
+        self.createCanvas()
+        self.updateCanvas()
+        self.tick()
+
+    def tick(self):
+        if self.fixed.update():
+            self.updateCanvas()
+        self.after(1000, self.tick)
+
+    def motion(self, e):
+        m = self.mode.get()
+        if m != 0:
+            self.updateCanvas()
+
+    def saveAndQuit(self):
+        scale = self.fixed.pixelSize
+        t = { 'r': self.regPins, 'i': self.poiPins }
+        for (k, ids) in t.items():
+            for id in ids:
+                (x,y) = self.pinCoords[id]
+                print("{0},{1},{2}".format(k, x * scale, y * scale))
+        super().quit()
+
+    def pinAt(self, x, y, pins):
+        ids = set(self.canvas.find_overlapping(x, y, x+1, y+1))
+        ps = ids & pins
+        if self.draggingPin in ps:
+            ps.remove(self.draggingPin)
+        if not ps:
+            return None
+        return ps.pop()
+
+    def regPinAt(self, x, y):
+        return self.pinAt(x, y, self.regPins)
+
+    def poiPinAt(self, x, y):
+        return self.pinAt(x, y, self.poiPins)
+
+    def zoomChange(self, delta, x, y):
+        scaleIndex = findNoGreaterThan(self.screen.scale, self.zoomLevels)
+        if delta < 0:
+            if scaleIndex == 0:
+                return
+            self.screen.zoomChange(self.zoomLevels[scaleIndex - 1], x, y)
+        else:
+            if len(self.zoomLevels) <= scaleIndex + 1:
+                return
+            self.screen.zoomChange(self.zoomLevels[scaleIndex + 1], x, y)
+        self.updateCanvas()
+
+    def deleteDraggingPin(self):
+        p = self.draggingPin
+        if p == None:
+            return
+        self.draggingPin = None
+        if p in self.regPins:
+            self.regPins.remove(p)
+        elif p in self.poiPins:
+            self.poiPins.remove(p)
+
+    def rightDragStart(self, x, y):
+        self.screen.dragStart(x, y)
+
+    def dragStart(self, x, y):
+        update = False
+        self.screen.dragStart(x, y)
+        p = self.regPinAt(x, y)
+        if not p:
+            p = self.poiPinAt(x, y)
+        if p:
+            # clicked a pin; make it the dragging pin
+            self.deleteDraggingPin()
+            self.draggingPin = p
+        elif self.draggingPin == None:
+            # Not clicked a pin, if we are in one of the pin modes
+            # we need to add a new one
+            m = self.mode.get()
+            if m == 1:
+                p = self.createPoiPin()
+                self.pinCoords[p] = self.screen.toWorld(x, y)
+                update = True
+            elif m == 2:
+                p = self.createRegPin()
+                self.pinCoords[p] = self.screen.toWorld(x, y)
+                update = True
+        if self.draggingPin:
+            ps = self.canvas.coords(self.draggingPin)
+            px = ps[0]
+            py = ps[1]
+            for i in range(2, len(ps) // 2):
+                py0 = ps[i*2+1]
+                if py < py0:
+                    px = ps[i*2]
+                    py = py0
+            self.draggingPinOffsetX = px - x
+            self.draggingPinOffsetY = py - y
+            update = True
+        if update:
+            self.updateCanvas()
+
+    def dragEnd(self, x, y):
+        if self.draggingPin:
+            if x < 0 or y < 0 or self.screen.width() < x or self.screen.height() < y:
+                self.deleteDraggingPin()
+            else:
+                self.pinCoords[self.draggingPin] = self.screen.toWorld(
+                    self.draggingPinOffsetX + x,
+                    self.draggingPinOffsetY + y
+                )
+            self.draggingPin = None
+            self.updateCanvas()
+
+    def rightDragMove(self, x, y):
+        self.screen.dragMove(x, y)
+        self.updateCanvas()
+
+    def dragMove(self, x, y):
+        if self.draggingPin:
+            self.pinCoords[self.draggingPin] = self.screen.toWorld(
+                self.draggingPinOffsetX + x,
+                self.draggingPinOffsetY + y
+            )
+        elif self.mode.get() == 0:
+            self.screen.dragMove(x, y)
+        else:
+            return
+        self.updateCanvas()
+
+    def createCanvas(self):
+        self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
+
+    def createPin(self, color):
+        return self.canvas.create_polygon((0,0,0,1,1,1),
+            fill=color, joinstyle='miter', outline='black', state='normal')
+
+    def createRegPin(self):
+        pin = self.createPin('yellow')
+        self.regPins.add(pin)
+        return pin
+
+    def createPoiPin(self):
+        pin = self.createPin('white')
+        self.poiPins.add(pin)
+        return pin
+
+    def updateCanvas(self):
+        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
+        self.fixed.update()
+        image = self.fixed.transformImage(self.screen)
+        for pinId in self.poiPins | self.regPins:
+            (x,y) = self.screen.fromWorld(*self.pinCoords[pinId])
+            if pinId == self.draggingPin:
+                self.canvas.coords(pinId, (x,y,x+5,y-15,x+15,y-5))
+            else:
+                self.canvas.coords(pinId, (x,y,x+5,y-15,x-5,y-15))
+        self.image = ImageTk.PhotoImage(image)
+        self.canvas.itemconfigure(self.canvasImage, image=self.image)
+
+if len(sys.argv) < 2 or 3 < len(sys.argv):
+    raise Exception("Need two inputs: ./manimal <fixed-image.czi> <sliding-image.czi> for alignments or one input for POIs")
 
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
-app = ManimalApplication(root, sys.argv[1], sys.argv[2])
+if len(sys.argv) == 3:
+    app = ManimalApplication(root, sys.argv[1], sys.argv[2])
+else:
+    app = PoiApplication(root, sys.argv[1])
 app.master.title("Manimal")
 app.mainloop()

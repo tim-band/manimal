@@ -2,6 +2,8 @@
 
 Manual Image Alignment tool
 
+## Align by eye
+
 ```
 ./manimal.py fixed.czi sliding.czi
 ```
@@ -26,6 +28,32 @@ The tool cannot currently cope with non-square pixels, or
 fixed and sliding images with different scalings.
 
 The tool can cope with multi-gigabyte images.
+
+## Find Points of Interest
+
+```
+./manimal.py image.czi
+```
+
+Sroll around the image as above with right drag and scroll wheel. You
+can also use left drag if "Move" is selected at the bottom. Select
+"POI" and you can start left-clicking to add (white) Point Of Interest
+markers. Select "Reg. point" to add (yellow) Registration Point
+markers. Markers can be dragged around in any mode. Markers
+dragged outside the image window are deleted.
+
+Click "OK" to output a table of markers, one per line in the form:
+
+```
+<t>,<x>,<y>
+```
+
+where `<t>` is the type: `r` for a registation marker, `i` for a point
+of interest marker, `<x>` and `<y>` are the marker's coordinates
+in micrometers.
+
+The tool cannot cope with non-square pixels even in this mode where
+it would be trivial to support.
 
 # The mathematics
 
