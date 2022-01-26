@@ -415,7 +415,9 @@ class ManimalApplication(tk.Frame):
         self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.togglePin)
         master.bind('p', lambda e: self.togglePin())
         self.fixed = ZoomableImage(pathlib.Path(fixed))
-        self.sliding = ZoomableImage(pathlib.Path(sliding))
+        flip = True
+        xflip = flip and -1 or 1
+        self.sliding = ZoomableImage(pathlib.Path(sliding), flip=flip)
         self.canvas = tk.Canvas(self)
         self.screen = Screen(self.canvas)
         # centres of the images
@@ -424,10 +426,10 @@ class ManimalApplication(tk.Frame):
         # rotation (in radians) then translation (in image pixels) of the sliding image
         # Order of operations for sliding layer: flip -> rotate -> translate
         self.sliding.setTranslation(
-            centreFixed[0] - centreSliding[0],
+            centreFixed[0] - xflip * centreSliding[0],
             centreFixed[1] - centreSliding[1]
         )
-        # zoom percent
+        # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
         self.screen.setTranslation(centreFixed[0], centreFixed[1])
         self.okButton.grid(column=2, row=1, sticky="s")
