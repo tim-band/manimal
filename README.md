@@ -55,6 +55,13 @@ in micrometers.
 The tool cannot cope with non-square pixels even in this mode where
 it would be trivial to support.
 
+# Building the wheel
+
+```sh
+pipenv lock -r > requirements.txt
+pip wheel . -r requirements.txt
+```
+
 # The mathematics
 
 We have a number of co-ordinate systems linked by affine transformations.
