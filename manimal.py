@@ -237,7 +237,7 @@ class ZoomableImage:
             return
         cw = screen.width()
         ch = screen.height()
-        radius = math.floor(math.hypot(cw, ch) * screen.scale / 2)
+        radius = max(1, math.floor(math.hypot(cw, ch) * screen.scale / 2))
         cacheRadius = radius * 3
         (x,y) = self.fromWorld(screen.panX, screen.panY)
         # clamp to within the bounding box of the image - radius
@@ -482,16 +482,17 @@ class ManimalApplication(tk.Frame):
         )
         self.readThread.daemon = True
         self.readThread.start()
+        self.createCanvas()
         self.update_idletasks()
         self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.createCanvas()
         self.updateCanvas()
         self.tick()
 
     def tick(self):
-        if self.fixed.update() or self.sliding.update():
-            self.updateCanvas()
+        self.fixed.update()
+        self.sliding.update()
+        self.updateCanvas()
         self.after(1000, self.tick)
 
     def togglePin(self):
@@ -631,15 +632,14 @@ class PoiApplication(tk.Frame):
         )
         self.readThread.daemon = True
         self.readThread.start()
-        self.update_idletasks()
-        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.createCanvas()
+        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.updateCanvas()
         self.tick()
 
     def tick(self):
-        if self.fixed.update():
-            self.updateCanvas()
+        self.fixed.update()
+        self.updateCanvas()
         self.after(1000, self.tick)
 
     def motion(self, e):
