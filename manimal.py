@@ -1,5 +1,6 @@
 #! /usr/bin/env python3
 from aicspylibczi import CziFile
+import argparse
 import math
 import numpy as np
 import pathlib
@@ -427,7 +428,7 @@ def readImages(inputQueue):
         readImage(i.queue, i.czi, i.radius, i.scale, i.cx, i.cy)
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master, fixed, sliding):
+    def __init__(self, master, fixed, sliding, file):
         super().__init__(master)
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
@@ -436,6 +437,7 @@ class ManimalApplication(tk.Frame):
         master.bind('<Escape>', lambda e: self.quit())
         self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.togglePin)
         master.bind('p', lambda e: self.togglePin())
+        self.file = file
         self.fixed = ZoomableImage(pathlib.Path(fixed))
         flip = True
         xflip = flip and -1 or 1
@@ -504,9 +506,17 @@ class ManimalApplication(tk.Frame):
             return
         self.updateCanvas(pin=(e.x, e.y))
 
-    def saveAndQuit(self):
+    def save(self, **kwargs):
+        print('x,y,t', **kwargs)
         for row in self.sliding.getMicrometerMatrix():
-            print(','.join(map(str, row)))
+            print(','.join(map(str, row)), **kwargs)
+
+    def saveAndQuit(self):
+        if self.file:
+            with open(self.file, 'w') as fh:
+                self.save(file=fh)
+        else:
+            self.save()
         super().quit()
 
     def isPin(self, x, y):
@@ -565,7 +575,7 @@ class ManimalApplication(tk.Frame):
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
 class PoiApplication(tk.Frame):
-    def __init__(self, master, fixed):
+    def __init__(self, master, fixed, file):
         super().__init__(master)
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
@@ -576,6 +586,7 @@ class PoiApplication(tk.Frame):
         self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
         self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
         self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
+        self.file = file
         self.fixed = ZoomableImage(pathlib.Path(fixed))
         self.canvas = tk.Canvas(self)
         self.screen = Screen(self.canvas)
@@ -630,13 +641,21 @@ class PoiApplication(tk.Frame):
         if m != 0:
             self.updateCanvas()
 
-    def saveAndQuit(self):
+    def save(self, **kwargs):
+        print('type,x,y,name', **kwargs)
         scale = self.fixed.pixelSize
         t = { 'r': self.regPins, 'i': self.poiPins }
         for (k, ids) in t.items():
             for id in ids:
                 (x,y) = self.pinCoords[id]
-                print("{0},{1},{2}".format(k, x * scale, y * scale))
+                print("{0},{1},{2},".format(k, x * scale, y * scale), **kwargs)
+
+    def saveAndQuit(self):
+        if self.file:
+            with open(self.file, 'w') as fh:
+                self.save(file=fh)
+        else:
+            self.save()
         super().quit()
 
     def pinAt(self, x, y, pins):
@@ -774,15 +793,36 @@ class PoiApplication(tk.Frame):
         self.image = ImageTk.PhotoImage(image)
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
-if len(sys.argv) < 2 or 3 < len(sys.argv):
-    raise Exception("Need two inputs: ./manimal <fixed-image.czi> <sliding-image.czi> for alignments or one input for POIs")
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    '-f',
+    '--file',
+    help='output CSV file (if not standard out)',
+    required=False,
+    dest='file',
+    metavar='FILE'
+)
+parser.add_argument(
+    '-a',
+    '--align',
+    help='sliding image, if alignment functionality is wanted (.czi file)',
+    dest='sliding',
+    required=False,
+    metavar='SLIDING'
+)
+parser.add_argument(
+    help='fixed image (.czi file)',
+    dest='fixed',
+    metavar='FIXED'
+)
+options = parser.parse_args()
 
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
-if len(sys.argv) == 3:
-    app = ManimalApplication(root, sys.argv[1], sys.argv[2])
+if options.sliding:
+    app = ManimalApplication(root, options.fixed, options.sliding, options.file)
 else:
-    app = PoiApplication(root, sys.argv[1])
+    app = PoiApplication(root, options.fixed, options.file)
 app.master.title("Manimal")
 app.mainloop()
