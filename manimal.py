@@ -151,40 +151,46 @@ class ZoomableImage:
         returns the centre of the whole image in image co-ordinates.
         """
         return (
-            self.flip * (self.bbox.x + self.bbox.w // 2),
+            self.bbox.x + self.bbox.w // 2,
             self.bbox.y + self.bbox.h // 2
         )
 
     def toWorld(self, x, y):
         s = math.sin(self.angle)
         c = math.cos(self.angle)
+        x *= self.flip
         return (
             c * x + s * y + self.tx,
             c * y - s * x + self.ty
         )
 
-    def fromWorld(self, x, y):
-        x -= self.tx
-        y -= self.ty
+    def fromWorldLinear(self, x, y):
+        """ Performs just the rotation and flip without the translation """
         s = math.sin(self.angle)
         c = math.cos(self.angle)
         return (
-            c * x - s * y,
+            self.flip * (c * x - s * y),
             c * y + s * x
         )
 
+    def fromWorld(self, x, y):
+        return self.fromWorldLinear(x - self.tx, y - self.ty)
+    
     def getMicrometerMatrix(self):
         """
         Returns the mapping TO this image (in micrometers) FROM world
         co-ordinates (in micrometers).
         """
+        c0 = self.fromWorldLinear(1, 0)
+        c1 = self.fromWorldLinear(0, 1)
+        c2 = self.fromWorld(0, 0)
         x = -self.tx * self.pixelSize
         y = -self.ty * self.pixelSize
         s = math.sin(self.angle)
         c = math.cos(self.angle)
         return [
-            [c, -s, c * x - s * x],
-            [s, c, s * x + c * y],
+            [c0[0], c1[0], c2[0] * self.pixelSize],
+            [c0[1], c1[1], c2[1] * self.pixelSize]
         ]
 
     def toScreen(self, screen: Screen, x, y):
