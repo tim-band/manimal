@@ -3,6 +3,7 @@ from aicspylibczi import CziFile
 import argparse
 import math
 import numpy as np
+import os
 import pathlib
 from PIL import Image, ImageTk
 import queue
@@ -184,10 +185,6 @@ class ZoomableImage:
         c0 = self.fromWorldLinear(1, 0)
         c1 = self.fromWorldLinear(0, 1)
         c2 = self.fromWorld(0, 0)
-        x = -self.tx * self.pixelSize
-        y = -self.ty * self.pixelSize
-        s = math.sin(self.angle)
-        c = math.cos(self.angle)
         return [
             [c0[0], c1[0], c2[0] * self.pixelSize],
             [c0[1], c1[1], c2[1] * self.pixelSize]
@@ -615,7 +612,9 @@ class PoiApplication(tk.Frame):
         self.grid_rowconfigure(0, weight=1)
         self.regPins = set([])
         self.poiPins = set([])
+        self.podPins = set([])
         self.pinCoords = {}
+        self.pinNames = {}
         self.draggingPin = None
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
         self.canvas.bind("<ButtonRelease-1>", lambda e: self.dragEnd(e.x, e.y))
@@ -635,6 +634,7 @@ class PoiApplication(tk.Frame):
         self.createCanvas()
         self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.updateCanvas()
+        self.loadIfAvailable(self.file)
         self.tick()
 
     def tick(self):
@@ -647,14 +647,46 @@ class PoiApplication(tk.Frame):
         if m != 0:
             self.updateCanvas()
 
+    def load(self, fh):
+        rows = fh.read().splitlines()
+        if len(rows) == 0:
+            return
+        if rows[0] != 'type,x,y,name':
+            raise Exception('Could not understand csv file')
+        scale = self.fixed.pixelSize
+        for r in rows[1:]:
+            p = r.split(',')
+            if len(p) == 4:
+                (t,x,y,name) = p
+                if t == 'i':
+                    if len(name) == 0:
+                        pin = self.createPoiPin()
+                    else:
+                        pin = self.createPodPin()
+                        self.pinNames[pin] = name
+                elif t == 'r':
+                        pin = self.createRegPin()
+                else:
+                    raise Exception('Did not understand pin type {0}'.format(t))
+                self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
+            elif len(p) != 0:
+                raise Exception('Did not understand row "{0}"'.format(r))
+
+    def loadIfAvailable(self, fn):
+        if os.path.exists(fn):
+            with open(fn, 'r') as fh:
+                self.load(fh)
+                return True
+        return False
+
     def save(self, **kwargs):
         print('type,x,y,name', **kwargs)
         scale = self.fixed.pixelSize
-        t = { 'r': self.regPins, 'i': self.poiPins }
-        for (k, ids) in t.items():
+        for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
             for id in ids:
                 (x,y) = self.pinCoords[id]
-                print("{0},{1},{2},".format(k, x * scale, y * scale), **kwargs)
+                name = id in self.pinNames and self.pinNames[id] or ''
+                print("{0},{1},{2},{3}".format(k, x * scale, y * scale, name), **kwargs)
 
     def saveAndQuit(self):
         if self.file:
@@ -772,9 +804,9 @@ class PoiApplication(tk.Frame):
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
 
-    def createPin(self, color):
+    def createPin(self, color, outline='black'):
         return self.canvas.create_polygon((0,0,0,1,1,1),
-            fill=color, joinstyle='miter', outline='black', state='normal')
+            fill=color, joinstyle='miter', outline=outline, state='normal')
 
     def createRegPin(self):
         pin = self.createPin('yellow')
@@ -786,11 +818,16 @@ class PoiApplication(tk.Frame):
         self.poiPins.add(pin)
         return pin
 
+    def createPodPin(self):
+        pin = self.createPin('grey24', outline='grey64')
+        self.podPins.add(pin)
+        return pin
+
     def updateCanvas(self):
         self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
         self.fixed.update()
         image = self.fixed.transformImage(self.screen)
-        for pinId in self.poiPins | self.regPins:
+        for pinId in self.poiPins | self.regPins | self.podPins:
             (x,y) = self.screen.fromWorld(*self.pinCoords[pinId])
             if pinId == self.draggingPin:
                 self.canvas.coords(pinId, (x,y,x+5,y-15,x+15,y-5))
