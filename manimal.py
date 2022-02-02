@@ -27,35 +27,94 @@ def findNoGreaterThan(x, xs):
             return i
     return len(xs)
 
-def readImage(queue, czi: CziFile, radius : int, scale, cx : int, cy : int):
-    """
-    Enqueues an image read from the CZI file and other information:
-    (np.ndarray, rect, scale, radius)
-    where rect is (left, top, width, height) in image co-ordinates
-    parameters:
-        czi: CZI image file
-        radius: how big we want the image to be, in source pixels
-        scale: reciprocal of scaling required, so 2 gives a half-sized image
-    """
-    scale = max(1.0, scale)
-    bbox = czi.get_mosaic_bounding_box()
-    cx = math.floor(max(cx, bbox.x + radius))
-    cx = min(cx, bbox.x + bbox.w - radius)
-    cy = math.floor(max(cy, bbox.y + radius))
-    cy = min(cy, bbox.y + bbox.h - radius)
-    left = max(cx - radius, bbox.x)
-    top = max(cy - radius, bbox.y)
-    right = min(cx + radius, bbox.x + bbox.w)
-    bottom = min(cy + radius, bbox.y + bbox.h)
-    width = right - left
-    height = bottom - top
-    rect = (left, top, width, height)
-    data = czi.read_mosaic(rect, 1 / scale, C=0)
-    brightness = 2.0
-    rescaled = np.minimum(np.multiply(data[0], brightness/256.0), 256.0)
-    img = np.asarray(rescaled.astype(np.uint8))
-    pil = Image.fromarray(img)
-    queue.put((pil, rect, scale, radius))
+class ImageFile:
+    def __init__(self, path):
+        czi = CziFile(path)
+        self.czi = czi
+        self.bbox = czi.get_mosaic_bounding_box()
+        sx = czi.meta.find('Metadata/Scaling/Items/Distance[@Id="X"]/Value')
+        sy = czi.meta.find('Metadata/Scaling/Items/Distance[@Id="Y"]/Value')
+        if sx == None or sy == None:
+            raise Exception("No pixel size in metadata")
+        xscale = float(sx.text)
+        yscale = float(sy.text)
+        if xscale != yscale:
+            raise Exception("Cannot handle non-square pixels yet, sorry!")
+        self.pixelSize = xscale
+        focus_actions = czi.meta.findall(
+            'Metadata/Information/TimelineTracks/TimelineTrack/TimelineElements/TimelineElement/EventInformation/FocusAction'
+        )
+        if focus_actions:
+            def focus_action_success(e):
+                r = e.find('Result')
+                return r != None and r.text == 'Success'
+            self.surface = [
+                [ float(a.find(tag).text) for tag in ['X', 'Y', 'ResultPosition'] ]
+                for a in focus_actions
+                if focus_action_success(a)
+            ]
+        else:
+            overall_z_element = (
+                czi.meta.find('Metadata/Experiment/ExperimentBlocks/AcquisitionBlock/SubDimensionSetups/RegionsSetup/SampleHolder/TileRegions/TileRegion/Z')
+                or czi.meta.find('Metadata/HardwareSetting/ParameterCollection[@Id="MTBFocus"]/Position')
+            )
+            self.surface = [float(overall_z_element.text)]
+
+    def readImage(self, queue, radius : int, scale, cx : int, cy : int):
+        """
+        Enqueues an image read from the CZI file and other information:
+        (np.ndarray, rect, scale, radius)
+        where rect is (left, top, width, height) in image co-ordinates
+        parameters:
+            czi: CZI image file
+            radius: how big we want the image to be, in source pixels
+            scale: reciprocal of scaling required, so 2 gives a half-sized image
+        """
+        scale = max(1.0, scale)
+        bbox = self.bbox
+        cx = math.floor(max(cx, bbox.x + radius))
+        cx = min(cx, bbox.x + bbox.w - radius)
+        cy = math.floor(max(cy, bbox.y + radius))
+        cy = min(cy, bbox.y + bbox.h - radius)
+        left = max(cx - radius, bbox.x)
+        top = max(cy - radius, bbox.y)
+        right = min(cx + radius, bbox.x + bbox.w)
+        bottom = min(cy + radius, bbox.y + bbox.h)
+        width = right - left
+        height = bottom - top
+        rect = (left, top, width, height)
+        data = self.czi.read_mosaic(rect, 1 / scale, C=0)
+        brightness = 2.0
+        rescaled = np.minimum(np.multiply(data[0], brightness/256.0), 256.0)
+        img = np.asarray(rescaled.astype(np.uint8))
+        pil = Image.fromarray(img)
+        queue.put((pil, rect, scale, radius))
+
+    def surfaceZ(self, x, y):
+        """
+        Returns an approximate z position from the x, y positions
+        provided (each in micrometers)
+        """
+        # For now, we'll just find the closest known surface point.
+        # An alternative might be to find the closest known points
+        # in the NW, NE, SE, SW quadrants (which will define a
+        # quadrilateral that definitely includes the point), then
+        # arbitrarily divide it by the line between the SW and NE
+        # points and choose the triangle the point is actually in,
+        # then interpolate between those three points.
+        x0 = self.surface[0][0] - x
+        y0 = self.surface[0][1] - y
+        dist2 = x0 * x0 + y0 * y0
+        best = self.surface[0][2]
+        for i in range(1,len(self.surface)):
+            p = self.surface[i]
+            xi = p[0] - x
+            yi = p[1] - y
+            d2 = xi * xi + yi * yi
+            if d2 < dist2:
+                dist2 = d2
+                best = p[2]
+        return best
 
 class Screen:
     def __init__(self, canvas):
@@ -115,17 +174,8 @@ class Screen:
 
 class ZoomableImage:
     def __init__(self, cziPath, flip=False):
-        self.czi = CziFile(pathlib.Path(cziPath))
-        pixelSizeElement = self.czi.meta.find('./Metadata/ImageScaling/ImagePixelSize')
-        if pixelSizeElement == None:
-            raise Exception("No pixel size in metadata")
-        pixelSizeText = pixelSizeElement.text
-        (xscale, yscale) = pixelSizeText.split(',')
-        if xscale != yscale:
-            raise Exception("Cannot handle non-square pixels yet, sorry!")
-        self.pixelSize = float(xscale)
+        self.czi = ImageFile(pathlib.Path(cziPath))
         self.queue = queue.SimpleQueue()
-        self.bbox = self.czi.get_mosaic_bounding_box()
         self.pil = None
         self.pilPosition = None
         self.pilRadius = 0
@@ -140,6 +190,9 @@ class ZoomableImage:
         self.flip = flip and -1 or 1
         self.waitingForRead = False
 
+    def pixelSize(self):
+        return self.czi.pixelSize
+
     def setAngle(self, angle):
         self.angle = angle
 
@@ -151,9 +204,10 @@ class ZoomableImage:
         """
         returns the centre of the whole image in image co-ordinates.
         """
+        bbox = self.czi.bbox
         return (
-            self.bbox.x + self.bbox.w // 2,
-            self.bbox.y + self.bbox.h // 2
+            bbox.x + bbox.w // 2,
+            bbox.y + bbox.h // 2
         )
 
     def toWorld(self, x, y):
@@ -185,9 +239,10 @@ class ZoomableImage:
         c0 = self.fromWorldLinear(1, 0)
         c1 = self.fromWorldLinear(0, 1)
         c2 = self.fromWorld(0, 0)
+        scale = self.pixelSize()
         return [
-            [c0[0], c1[0], c2[0] * self.pixelSize],
-            [c0[1], c1[1], c2[1] * self.pixelSize]
+            [c0[0], c1[0], c2[0] * scale],
+            [c0[1], c1[1], c2[1] * scale]
         ]
 
     def toScreen(self, screen: Screen, x, y):
@@ -240,8 +295,9 @@ class ZoomableImage:
         # clamp to within the bounding box of the image - radius
         # (we are assuming here that bbox.w and bbox.h are at least 2*cacheRadius, which
         # will be true for the images we care about)
-        x = max(self.bbox.x + cacheRadius, min(self.bbox.x + self.bbox.w - cacheRadius, x))
-        y = max(self.bbox.y + cacheRadius, min(self.bbox.y + self.bbox.h - cacheRadius, y))
+        bbox = self.czi.bbox
+        x = max(bbox.x + cacheRadius, min(bbox.x + bbox.w - cacheRadius, x))
+        y = max(bbox.y + cacheRadius, min(bbox.y + bbox.h - cacheRadius, y))
         # if we are not within the old radius, request a new cache update
         magnification = self.scale / screen.scale
         if (self.pilPosition == None
@@ -428,7 +484,7 @@ def readImages(inputQueue):
     """
     while True:
         i = inputQueue.get()
-        readImage(i.queue, i.czi, i.radius, i.scale, i.cx, i.cy)
+        i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy)
 
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed, sliding, file):
@@ -653,7 +709,7 @@ class PoiApplication(tk.Frame):
             return
         if rows[0] != 'type,x,y,name':
             raise Exception('Could not understand csv file')
-        scale = self.fixed.pixelSize
+        scale = self.fixed.pixelSize()
         for r in rows[1:]:
             p = r.split(',')
             if len(p) == 4:
@@ -673,20 +729,23 @@ class PoiApplication(tk.Frame):
                 raise Exception('Did not understand row "{0}"'.format(r))
 
     def loadIfAvailable(self, fn):
-        if os.path.exists(fn):
+        if fn and os.path.exists(fn):
             with open(fn, 'r') as fh:
                 self.load(fh)
                 return True
         return False
 
     def save(self, **kwargs):
-        print('type,x,y,name', **kwargs)
-        scale = self.fixed.pixelSize
+        print('type,x,y,z,name', **kwargs)
+        scale = self.fixed.pixelSize() * 1e6
         for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
             for id in ids:
                 (x,y) = self.pinCoords[id]
+                sx = x * scale
+                sy = y * scale
+                z = self.fixed.czi.surfaceZ(sx, sy)
                 name = id in self.pinNames and self.pinNames[id] or ''
-                print("{0},{1},{2},{3}".format(k, x * scale, y * scale, name), **kwargs)
+                print("{0},{1},{2},{3},{4}".format(k, sx, sy, z, name), **kwargs)
 
     def saveAndQuit(self):
         if self.file:
