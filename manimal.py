@@ -28,7 +28,7 @@ def findNoGreaterThan(x, xs):
     return len(xs)
 
 class ImageFile:
-    def __init__(self, path):
+    def __init__(self, path, brightness):
         czi = CziFile(path)
         self.czi = czi
         self.bbox = czi.get_mosaic_bounding_box()
@@ -59,6 +59,7 @@ class ImageFile:
                 or czi.meta.find('Metadata/HardwareSetting/ParameterCollection[@Id="MTBFocus"]/Position')
             )
             self.surface = [float(overall_z_element.text)]
+        self.brightness = brightness
 
     def readImage(self, queue, radius : int, scale, cx : int, cy : int):
         """
@@ -84,8 +85,10 @@ class ImageFile:
         height = bottom - top
         rect = (left, top, width, height)
         data = self.czi.read_mosaic(rect, 1 / scale, C=0)
-        brightness = 2.0
-        rescaled = np.minimum(np.multiply(data[0], brightness/256.0), 256.0)
+        rescaled = np.minimum(
+            np.multiply(data[0], self.brightness/256.0),
+            256.0
+        )
         img = np.asarray(rescaled.astype(np.uint8))
         pil = Image.fromarray(img)
         queue.put((pil, rect, scale, radius))
@@ -173,8 +176,8 @@ class Screen:
         self.panY += ds * my
 
 class ZoomableImage:
-    def __init__(self, cziPath, flip=False):
-        self.czi = ImageFile(pathlib.Path(cziPath))
+    def __init__(self, cziPath, brightness=2.0, flip=False):
+        self.czi = ImageFile(pathlib.Path(cziPath), brightness)
         self.queue = queue.SimpleQueue()
         self.pil = None
         self.pilPosition = None
@@ -191,7 +194,10 @@ class ZoomableImage:
         self.waitingForRead = False
 
     def pixelSize(self):
-        return self.czi.pixelSize
+        """
+        Returns pixelSize in micrometers.
+        """
+        return self.czi.pixelSize * 1e6
 
     def setAngle(self, angle):
         self.angle = angle
@@ -487,7 +493,7 @@ def readImages(inputQueue):
         i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy)
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master, fixed, sliding, file):
+    def __init__(self, master, fixed, sliding, file, fixed_brightness=2.0):
         super().__init__(master)
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
@@ -497,10 +503,14 @@ class ManimalApplication(tk.Frame):
         self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.togglePin)
         master.bind('p', lambda e: self.togglePin())
         self.file = file
-        self.fixed = ZoomableImage(pathlib.Path(fixed))
+        self.fixed = ZoomableImage(
+            pathlib.Path(fixed), brightness=fixed_brightness
+        )
         flip = True
         xflip = flip and -1 or 1
-        self.sliding = ZoomableImage(pathlib.Path(sliding), flip=flip)
+        self.sliding = ZoomableImage(
+            pathlib.Path(sliding), flip=flip
+        )
         self.canvas = tk.Canvas(self)
         self.screen = Screen(self.canvas)
         # centres of the images
@@ -635,7 +645,7 @@ class ManimalApplication(tk.Frame):
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
 class PoiApplication(tk.Frame):
-    def __init__(self, master, fixed, file):
+    def __init__(self, master, fixed, file, fixed_brightness=2.0):
         super().__init__(master)
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
@@ -647,7 +657,7 @@ class PoiApplication(tk.Frame):
         self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
         self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
         self.file = file
-        self.fixed = ZoomableImage(pathlib.Path(fixed))
+        self.fixed = ZoomableImage(pathlib.Path(fixed), brightness=fixed_brightness)
         self.canvas = tk.Canvas(self)
         self.screen = Screen(self.canvas)
         centreFixed = self.fixed.centre()
@@ -707,13 +717,13 @@ class PoiApplication(tk.Frame):
         rows = fh.read().splitlines()
         if len(rows) == 0:
             return
-        if rows[0] != 'type,x,y,name':
+        if rows[0] != 'type,x,y,z,name':
             raise Exception('Could not understand csv file')
         scale = self.fixed.pixelSize()
         for r in rows[1:]:
             p = r.split(',')
-            if len(p) == 4:
-                (t,x,y,name) = p
+            if len(p) == 5:
+                (t,x,y,z,name) = p
                 if t == 'i':
                     if len(name) == 0:
                         pin = self.createPoiPin()
@@ -737,7 +747,7 @@ class PoiApplication(tk.Frame):
 
     def save(self, **kwargs):
         print('type,x,y,z,name', **kwargs)
-        scale = self.fixed.pixelSize() * 1e6
+        scale = self.fixed.pixelSize()
         for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
             for id in ids:
                 (x,y) = self.pinCoords[id]
@@ -917,14 +927,31 @@ parser.add_argument(
     dest='fixed',
     metavar='FIXED'
 )
+parser.add_argument(
+    '-b',
+    '--brightness',
+    help='brightness of the fixed image',
+    dest='fixed_brightness',
+    required=False,
+    type=float,
+    metavar='BRIGHTNESS'
+)
 options = parser.parse_args()
+
+extras = []
+if options.fixed_brightness:
+    extras.append(float(options.fixed_brightness))
 
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
 if options.sliding:
-    app = ManimalApplication(root, options.fixed, options.sliding, options.file)
+    app = ManimalApplication(
+        root, options.fixed, options.sliding, options.file, *extras
+    )
 else:
-    app = PoiApplication(root, options.fixed, options.file)
+    app = PoiApplication(
+        root, options.fixed, options.file, *extras
+    )
 app.master.title("Manimal")
 app.mainloop()
