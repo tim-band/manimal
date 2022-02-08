@@ -27,6 +27,42 @@ def findNoGreaterThan(x, xs):
             return i
     return len(xs)
 
+def strip_zen_nonsense(h):
+    h = h.strip('"')
+    start = h.find("::")
+    start = 0 if start < 0 else start + 2
+    end = h.find("!!")
+    if end < 0:
+        end = len(h)
+    return h[start:end]
+
+class CsvLoader:
+    def __init__(self, fh):
+        rows = fh.read().splitlines()
+        if len(rows) == 0:
+            self.headers = None
+            self.rows = []
+            return
+        self.headers = [strip_zen_nonsense(h) for h in rows[0].split(',')]
+        self.rows = [r for r in rows[1:] if r.strip(',"')]
+
+    def headersAre(self, cshs):
+        """
+        Returns True iff cshs (a comma-separated list of headers) matches
+        the actual headers.
+        """
+        if not self.headers:
+            return False
+        hs = cshs.split(',')
+        return hs == self.headers
+
+    def rowCount(self):
+        return len(self.rows)
+
+    def generateRows(self):
+        for r in self.rows:
+            yield [c.strip('"') for c in r.split(',')]
+
 class ImageFile:
     def __init__(self, path, brightness):
         czi = CziFile(path)
@@ -714,33 +750,26 @@ class PoiApplication(tk.Frame):
             self.updateCanvas()
 
     def load(self, fh):
-        rows = fh.read().splitlines()
-        if len(rows) == 0:
-            return
-        if rows[0] != 'type,x,y,z,name':
+        csv = CsvLoader(fh)
+        if not csv.headersAre('type,x,y,z,name'):
             raise Exception('Could not understand csv file')
         scale = self.fixed.pixelSize()
-        for r in rows[1:]:
-            p = r.split(',')
-            if len(p) == 5:
-                (t,x,y,z,name) = p
-                if t == 'i':
-                    if len(name) == 0:
-                        pin = self.createPoiPin()
-                    else:
-                        pin = self.createPodPin()
-                        self.pinNames[pin] = name
-                elif t == 'r':
-                        pin = self.createRegPin()
+        for (t,x,y,z,name) in csv.generateRows():
+            if t == 'i':
+                if len(name) == 0:
+                    pin = self.createPoiPin()
                 else:
-                    raise Exception('Did not understand pin type {0}'.format(t))
-                self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
-            elif len(p) != 0:
-                raise Exception('Did not understand row "{0}"'.format(r))
+                    pin = self.createPodPin()
+                    self.pinNames[pin] = name
+            elif t == 'r':
+                    pin = self.createRegPin()
+            else:
+                raise Exception('Did not understand pin type {0}'.format(t))
+            self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
 
     def loadIfAvailable(self, fn):
         if fn and os.path.exists(fn):
-            with open(fn, 'r') as fh:
+            with open(fn, 'r', encoding='utf-8-sig') as fh:
                 self.load(fh)
                 return True
         return False
