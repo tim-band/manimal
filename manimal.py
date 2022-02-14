@@ -529,195 +529,72 @@ def readImages(inputQueue):
         i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy)
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master, fixed, sliding, file, fixed_brightness=2.0):
+    def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0):
         super().__init__(master)
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
+        self.okButton.grid(column=5, row=1, sticky="s")
         master.bind('<Return>', lambda e: self.saveAndQuit())
         self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
+        self.cancelButton.grid(column=4, row=1, sticky="s")
         master.bind('<Escape>', lambda e: self.quit())
-        self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.togglePin)
-        master.bind('p', lambda e: self.togglePin())
-        self.file = file
-        self.fixed = ZoomableImage(
-            pathlib.Path(fixed), brightness=fixed_brightness
-        )
-        flip = True
+        self.canvas = tk.Canvas(self)
+        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
+        self.screen = Screen(self.canvas)
+        self.mode = tk.IntVar(value=0)
+        if poi_file != None:
+            self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
+            self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
+            self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
+            self.moveButton.grid(column=0, row=1, sticky="s")
+            self.poiButton.grid(column=1, row=1, sticky="s")
+            self.regButton.grid(column=2, row=1, sticky="s")
+        self.poi_file = poi_file
+        self.fixed = None
+        if fixed:
+            self.fixed = ZoomableImage(
+                pathlib.Path(fixed),
+                brightness=fixed_brightness
+            )
+            centreFixed = self.fixed.centre()
+            self.screen.setTranslation(centreFixed[0], centreFixed[1])
+        self.matrix_file = matrix_file
+        flip = fixed and sliding and True or False
         xflip = flip and -1 or 1
-        self.sliding = ZoomableImage(
-            pathlib.Path(sliding), flip=flip
-        )
-        self.canvas = tk.Canvas(self)
-        self.screen = Screen(self.canvas)
-        # centres of the images
-        centreFixed = self.fixed.centre()
-        centreSliding = self.sliding.centre()
-        self.sliding.setTranslation(
-            centreFixed[0] - xflip * centreSliding[0],
-            centreFixed[1] - centreSliding[1]
-        )
-        # zoom 100/percent
-        self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
-        self.screen.setTranslation(centreFixed[0], centreFixed[1])
-        self.okButton.grid(column=2, row=1, sticky="s")
-        self.cancelButton.grid(column=1, row=1, sticky="s")
-        self.pinButton.grid(column=0, row=1, sticky="s")
-        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
-        self.pinId = None
-        self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
-        self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
-        self.canvas.bind("<Button-3>", lambda e: self.dragStart(e.x, e.y))
-        self.canvas.bind("<B3-Motion>", lambda e: self.rightDragMove(e.x, e.y))
-        self.canvas.bind("<MouseWheel>", lambda e: self.zoomChange(e.delta, e.x, e.y))
-        self.canvas.bind("<Button-4>", lambda e: self.zoomChange(-120, e.x, e.y))
-        self.canvas.bind("<Button-5>", lambda e: self.zoomChange(120, e.x, e.y))
-        self.canvas.bind("<Motion>", self.motion)
-        self.requestQueue = queue.SimpleQueue()
-        self.readThread = threading.Thread(
-            target=readImages, args=(self.requestQueue,)
-        )
-        self.readThread.daemon = True
-        self.readThread.start()
-        self.createCanvas()
-        self.update_idletasks()
-        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.updateCanvas()
-        self.tick()
-
-    def tick(self):
-        self.fixed.update()
-        self.sliding.update()
-        self.updateCanvas()
-        self.after(1000, self.tick)
-
-    def togglePin(self):
-        c = self.pinButton.config
-        if c('relief')[-1] == 'raised':
-            c(relief='sunken')
-            self.canvas.itemconfigure(self.pinId, state='normal')
-        else:
-            c(relief='raised')
-            self.canvas.itemconfigure(self.pinId, state='hidden')
-            self.sliding.unsetPin()
-
-    def isPinIn(self):
-        return self.pinButton.config('relief')[-1] == 'sunken'
-
-    def motion(self, e):
-        if self.sliding.pin != None or not self.isPinIn():
-            return
-        self.updateCanvas(pin=(e.x, e.y))
-
-    def save(self, **kwargs):
-        print('x,y,t', **kwargs)
-        for row in self.sliding.getMicrometerMatrix():
-            print(','.join(map(str, row)), **kwargs)
-
-    def saveAndQuit(self):
-        if self.file:
-            with open(self.file, 'w') as fh:
-                self.save(file=fh)
-        else:
-            self.save()
-        super().quit()
-
-    def isPin(self, x, y):
-        ids = self.canvas.find_overlapping(x, y, x+1, y+1)
-        return self.pinId in ids
-
-    def zoomChange(self, delta, x, y):
-        scaleIndex = findNoGreaterThan(self.screen.scale, self.zoomLevels)
-        if delta < 0:
-            if scaleIndex == 0:
-                return
-            self.screen.zoomChange(self.zoomLevels[scaleIndex - 1], x, y)
-        else:
-            if len(self.zoomLevels) <= scaleIndex + 1:
-                return
-            self.screen.zoomChange(self.zoomLevels[scaleIndex + 1], x, y)
-        self.updateCanvas()
-
-    def dragStart(self, x, y):
-        self.screen.dragStart(x, y)
-        self.sliding.dragStart(self.screen, x, y, draggingPin=self.isPin(x, y))
-        if self.isPinIn():
-            if self.sliding.setPinIfUnset(self.screen, x, y):
-                self.updateCanvas()
-
-    def rightDragMove(self, x, y):
-        self.screen.dragMove(x, y)
-        self.updateCanvas()
-
-    def dragMove(self, x, y):
-        self.sliding.dragMove(self.screen, x, y)
-        self.updateCanvas()
-
-    def createCanvas(self):
-        self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
-        self.pinId = self.canvas.create_polygon((0,0,0,1,1,1,1,0),
-            fill='white', joinstyle='miter', outline='black', state='hidden')
-
-    def updateCanvas(self, pin=None):
-        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.fixed.update()
-        self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.sliding.update()
-        image = self.fixed.transformImage(self.screen)
-        slider = self.sliding.transformImage(self.screen)
-        image = Image.blend(image, slider, 0.5)
-        if pin != None:
-            (x,y) = pin
-            self.canvas.coords(self.pinId, (x,y,x+5,y-15,x+15,y-5))
-        else:
-            p = self.sliding.pinScreenPosition(self.screen)
-            if p:
-                (x,y) = p
-                self.canvas.coords(self.pinId, (x,y,x-5,y-15,x+5,y-15))
-        self.image = ImageTk.PhotoImage(image)
-        self.canvas.itemconfigure(self.canvasImage, image=self.image)
-
-class PoiApplication(tk.Frame):
-    def __init__(self, master, fixed, file, fixed_brightness=2.0):
-        super().__init__(master)
-        self.grid(row=0, column=0, sticky='nsew')
-        self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
-        master.bind('<Return>', lambda e: self.saveAndQuit())
-        self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
-        master.bind('<Escape>', lambda e: self.quit())
-        self.mode = tk.IntVar()
-        self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
-        self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
-        self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
-        self.file = file
-        self.fixed = ZoomableImage(pathlib.Path(fixed), brightness=fixed_brightness)
-        self.canvas = tk.Canvas(self)
-        self.screen = Screen(self.canvas)
-        centreFixed = self.fixed.centre()
-        # zoom 100/percent
-        self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
-        self.screen.setTranslation(centreFixed[0], centreFixed[1])
-        self.okButton.grid(column=4, row=1, sticky="s")
-        self.cancelButton.grid(column=3, row=1, sticky="s")
-        self.moveButton.grid(column=0, row=1, sticky="s")
-        self.poiButton.grid(column=1, row=1, sticky="s")
-        self.regButton.grid(column=2, row=1, sticky="s")
-        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(2, weight=1)
-        self.grid_columnconfigure(3, weight=0)
-        self.grid_columnconfigure(4, weight=0)
-        self.grid_rowconfigure(0, weight=1)
+        self.axlePin = None
         self.regPins = set([])
         self.poiPins = set([])
         self.podPins = set([])
         self.pinCoords = {}
         self.pinNames = {}
         self.draggingPin = None
+        self.pinButton = None
+        self.sliding = None
+        if sliding:
+            self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.toggleAxlePin)
+            self.pinButton.grid(column=3, row=1, sticky="s")
+            master.bind('p', lambda e: self.toggleAxlePin())
+            self.sliding = ZoomableImage(
+                pathlib.Path(sliding), flip=flip
+            )
+            centreSliding = self.sliding.centre()
+            if fixed:
+                self.sliding.setTranslation(
+                    centreFixed[0] - xflip * centreSliding[0],
+                    centreFixed[1] - centreSliding[1]
+                )
+            else:
+                self.screen.setTranslation(centreSliding[0], centreSliding[1])
+        # zoom 100/percent
+        self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
+        self.grid_columnconfigure(3, weight=self.pinButton and 1 or 0)
+        self.grid_columnconfigure(4, weight=0)
+        self.grid_columnconfigure(5, weight=0)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
         self.canvas.bind("<ButtonRelease-1>", lambda e: self.dragEnd(e.x, e.y))
         self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
@@ -734,26 +611,91 @@ class PoiApplication(tk.Frame):
         self.readThread.daemon = True
         self.readThread.start()
         self.createCanvas()
-        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
+        self.update_idletasks()
+        self.updateCache()
         self.updateCanvas()
-        self.loadIfAvailable(self.file)
+        self.loadPoisIfAvailable(self.poi_file)
         self.tick()
 
+    def updateCache(self):
+        if self.fixed:
+            self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
+            self.fixed.update()
+        if self.sliding:
+            self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
+            self.sliding.update()
+
     def tick(self):
-        self.fixed.update()
+        if self.fixed:
+            self.fixed.update()
+        if self.sliding:
+            self.sliding.update()
         self.updateCanvas()
         self.after(1000, self.tick)
 
+    def removeAxlePin(self):
+        if self.pinButton == None:
+            return
+        c = self.pinButton.config
+        c(relief='raised')
+        self.canvas.itemconfigure(self.axlePin, state='hidden')
+        self.sliding.unsetPin()
+
+    def toggleAxlePin(self):
+        if self.pinButton == None:
+            return
+        c = self.pinButton.config
+        if c('relief')[-1] == 'raised':
+            c(relief='sunken')
+            self.canvas.itemconfigure(self.axlePin, state='normal')
+        else:
+            self.removeAxlePin()
+
+    def isAxlePinIn(self):
+        return self.pinButton and self.pinButton.config('relief')[-1] == 'sunken'
+
     def motion(self, e):
         m = self.mode.get()
-        if m != 0:
+        if self.sliding and self.sliding.pin == None and self.isAxlePinIn():
+            self.updateCanvas(pin=(e.x, e.y))
+        elif m != 0:
             self.updateCanvas()
 
-    def load(self, fh):
+    def savePois(self, **kwargs):
+        print('type,x,y,z,name', **kwargs)
+        image = self.fixed or self.sliding
+        scale = image.pixelSize()
+        for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
+            for id in ids:
+                (x,y) = self.pinCoords[id]
+                sx = x * scale
+                sy = y * scale
+                z = image.czi.surfaceZ(sx, sy)
+                name = id in self.pinNames and self.pinNames[id] or ''
+                print("{0},{1},{2},{3},{4}".format(k, sx, sy, z, name), **kwargs)
+
+    def saveMatrix(self, **kwargs):
+        print('x,y,t', **kwargs)
+        for row in self.sliding.getMicrometerMatrix():
+            print(','.join(map(str, row)), **kwargs)
+
+    def saveAndQuit(self):
+        if self.poi_file:
+            with open(self.poi_file, 'w') as fh:
+                self.savePois(file=fh)
+        if self.sliding:
+            if self.matrix_file:
+                with open(self.matrix_file, 'w') as fh:
+                    self.saveMatrix(file=fh)
+            else:
+                self.saveMatrix()
+        super().quit()
+
+    def loadPois(self, fh):
         csv = CsvLoader(fh)
         if not csv.headersAre('type,x,y,z,name'):
             raise Exception('Could not understand csv file')
-        scale = self.fixed.pixelSize()
+        scale = self.fixed.pixelSize() if self.fixed else self.sliding.pixelSize()
         for (t,x,y,z,name) in csv.generateRows():
             if t == 'i':
                 if len(name) == 0:
@@ -767,32 +709,16 @@ class PoiApplication(tk.Frame):
                 raise Exception('Did not understand pin type {0}'.format(t))
             self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
 
-    def loadIfAvailable(self, fn):
+    def loadPoisIfAvailable(self, fn):
         if fn and os.path.exists(fn):
             with open(fn, 'r', encoding='utf-8-sig') as fh:
-                self.load(fh)
+                self.loadPois(fh)
                 return True
         return False
 
-    def save(self, **kwargs):
-        print('type,x,y,z,name', **kwargs)
-        scale = self.fixed.pixelSize()
-        for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
-            for id in ids:
-                (x,y) = self.pinCoords[id]
-                sx = x * scale
-                sy = y * scale
-                z = self.fixed.czi.surfaceZ(sx, sy)
-                name = id in self.pinNames and self.pinNames[id] or ''
-                print("{0},{1},{2},{3},{4}".format(k, sx, sy, z, name), **kwargs)
-
-    def saveAndQuit(self):
-        if self.file:
-            with open(self.file, 'w') as fh:
-                self.save(file=fh)
-        else:
-            self.save()
-        super().quit()
+    def isAxlePin(self, x, y):
+        ids = self.canvas.find_overlapping(x, y, x+1, y+1)
+        return self.axlePin in ids
 
     def pinAt(self, x, y, pins):
         ids = set(self.canvas.find_overlapping(x, y, x+1, y+1))
@@ -809,6 +735,18 @@ class PoiApplication(tk.Frame):
     def poiPinAt(self, x, y):
         return self.pinAt(x, y, self.poiPins)
 
+    def deleteDraggingPin(self):
+        p = self.draggingPin
+        if p == None:
+            return
+        self.draggingPin = None
+        if p in self.regPins:
+            self.regPins.remove(p)
+        elif p in self.poiPins:
+            self.poiPins.remove(p)
+        elif p == self.axlePin:
+            self.removeAxlePin()
+
     def zoomChange(self, delta, x, y):
         scaleIndex = findNoGreaterThan(self.screen.scale, self.zoomLevels)
         if delta < 0:
@@ -821,16 +759,6 @@ class PoiApplication(tk.Frame):
             self.screen.zoomChange(self.zoomLevels[scaleIndex + 1], x, y)
         self.updateCanvas()
 
-    def deleteDraggingPin(self):
-        p = self.draggingPin
-        if p == None:
-            return
-        self.draggingPin = None
-        if p in self.regPins:
-            self.regPins.remove(p)
-        elif p in self.poiPins:
-            self.poiPins.remove(p)
-
     def rightDragStart(self, x, y):
         self.screen.dragStart(x, y)
 
@@ -840,6 +768,9 @@ class PoiApplication(tk.Frame):
         p = self.regPinAt(x, y)
         if not p:
             p = self.poiPinAt(x, y)
+        if not p and self.isAxlePin(x, y):
+            p = self.axlePin
+            self.sliding.dragStart(self.screen, x, y, draggingPin=True)
         if p:
             # clicked a pin; make it the dragging pin
             self.deleteDraggingPin()
@@ -856,6 +787,8 @@ class PoiApplication(tk.Frame):
                 p = self.createRegPin()
                 self.pinCoords[p] = self.screen.toWorld(x, y)
                 update = True
+            elif self.sliding != None:
+                self.sliding.dragStart(self.screen, x, y)
         if self.draggingPin:
             ps = self.canvas.coords(self.draggingPin)
             px = ps[0]
@@ -875,6 +808,8 @@ class PoiApplication(tk.Frame):
         if self.draggingPin:
             if x < 0 or y < 0 or self.screen.width() < x or self.screen.height() < y:
                 self.deleteDraggingPin()
+            elif self.draggingPin == self.axlePin:
+                self.sliding.setPinIfUnset(self.screen, x, y)
             else:
                 self.pinCoords[self.draggingPin] = self.screen.toWorld(
                     self.draggingPinOffsetX + x,
@@ -889,18 +824,25 @@ class PoiApplication(tk.Frame):
 
     def dragMove(self, x, y):
         if self.draggingPin:
-            self.pinCoords[self.draggingPin] = self.screen.toWorld(
-                self.draggingPinOffsetX + x,
-                self.draggingPinOffsetY + y
-            )
-        elif self.mode.get() == 0:
+            if self.draggingPin == self.axlePin:
+                self.sliding.dragMove(self.screen, x, y)
+            else:
+                self.pinCoords[self.draggingPin] = self.screen.toWorld(
+                    self.draggingPinOffsetX + x,
+                    self.draggingPinOffsetY + y
+                )
+        elif not self.sliding:
             self.screen.dragMove(x, y)
+        elif self.mode.get() == 0:
+            self.sliding.dragMove(self.screen, x, y)
         else:
             return
         self.updateCanvas()
 
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
+        self.axlePin = self.canvas.create_polygon((0,0,0,1,1,1,1,0),
+            fill='green', joinstyle='miter', outline='black', state='hidden')
 
     def createPin(self, color, outline='black'):
         return self.canvas.create_polygon((0,0,0,1,1,1),
@@ -921,27 +863,42 @@ class PoiApplication(tk.Frame):
         self.podPins.add(pin)
         return pin
 
-    def updateCanvas(self):
-        self.fixed.updateCacheIfNecessary(self.requestQueue, self.screen)
-        self.fixed.update()
-        image = self.fixed.transformImage(self.screen)
+    def updateCanvas(self, pin=None):
+        self.updateCache()
+        image = None
+        if self.fixed:
+            image = self.fixed.transformImage(self.screen)
+        if self.sliding:
+            slider = self.sliding.transformImage(self.screen)
+            if image:
+                image = Image.blend(image, slider, 0.5)
+            else:
+                image = slider
         for pinId in self.poiPins | self.regPins | self.podPins:
             (x,y) = self.screen.fromWorld(*self.pinCoords[pinId])
             if pinId == self.draggingPin:
                 self.canvas.coords(pinId, (x,y,x+5,y-15,x+15,y-5))
             else:
                 self.canvas.coords(pinId, (x,y,x+5,y-15,x-5,y-15))
+        if pin != None:
+            (x,y) = pin
+            self.canvas.coords(self.axlePin, (x,y,x+5,y-15,x+15,y-5))
+        elif self.sliding:
+            p = self.sliding.pinScreenPosition(self.screen)
+            if p:
+                (x,y) = p
+                self.canvas.coords(self.axlePin, (x,y,x-5,y-15,x+5,y-15))
         self.image = ImageTk.PhotoImage(image)
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    '-f',
-    '--file',
-    help='output CSV file (if not standard out)',
+    '-p',
+    '--poi',
+    help='input/output CSV file for points of interest',
     required=False,
-    dest='file',
-    metavar='FILE'
+    dest='poi_file',
+    metavar='POI-CSV'
 )
 parser.add_argument(
     '-a',
@@ -949,12 +906,21 @@ parser.add_argument(
     help='sliding image, if alignment functionality is wanted (.czi file)',
     dest='sliding',
     required=False,
-    metavar='SLIDING'
 )
 parser.add_argument(
+    '-m',
+    '--matrix',
+    help='matrix output CSV file (if not standard out), only if --align is used',
+    required=False,
+    dest='matrix_file',
+    metavar='MATRIX-CSV'
+)
+parser.add_argument(
+    '-f',
+    '--fixed',
     help='fixed image (.czi file)',
-    dest='fixed',
-    metavar='FIXED'
+    required=False,
+    dest='fixed'
 )
 parser.add_argument(
     '-b',
@@ -967,20 +933,24 @@ parser.add_argument(
 )
 options = parser.parse_args()
 
-extras = []
-if options.fixed_brightness:
-    extras.append(float(options.fixed_brightness))
+kw = {
+}
+for attr in ['poi_file', 'sliding', 'matrix_file', 'fixed_brightness', 'fixed']:
+    v = getattr(options, attr, None)
+    if v != None:
+        kw[attr] = v
+
+if 'fixed' not in kw and 'sliding' not in kw:
+    parser.error('Either fixed or sliding (or both) images must be specified')
+
+if 'poi_file' not in kw and 'sliding' not in kw:
+    parser.error('Either a poi file or a sliding image (or both) must be specified')
 
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
-if options.sliding:
-    app = ManimalApplication(
-        root, options.fixed, options.sliding, options.file, *extras
-    )
-else:
-    app = PoiApplication(
-        root, options.fixed, options.file, *extras
-    )
+app = ManimalApplication(
+    root, **kw
+)
 app.master.title("Manimal")
 app.mainloop()

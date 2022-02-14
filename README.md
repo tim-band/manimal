@@ -5,7 +5,7 @@ Manual Image Alignment tool
 ## Align by eye
 
 ```
-./manimal.py fixed.czi sliding.czi
+./manimal.py -f fixed.czi -a sliding.czi -m matrix.csv
 ```
 
 Manimal allows you to align two large CZI images by eye.
@@ -29,13 +29,20 @@ fixed and sliding images with different scalings.
 
 The tool can cope with multi-gigabyte images.
 
+The output file specified by `-m` or `--matrix` will be filled with
+the matrix for transforming the fixed image co-ordinates to
+the sliding image co-ordinated (in micrometers).
+
+If not such output file is specified the matrix will be output on
+standard out.
+
 ## Find Points of Interest
 
 ```
-./manimal.py image.czi
+./manimal.py -f image.czi -p poi.csv
 ```
 
-Sroll around the image as above with right drag and scroll wheel. You
+Scroll around the image as above with right drag and scroll wheel. You
 can also use left drag if "Move" is selected at the bottom. Select
 "POI" and you can start left-clicking to add (white) Point Of Interest
 markers. Select "Reg. point" to add (yellow) Registration Point
@@ -54,6 +61,19 @@ in micrometers.
 
 The tool cannot cope with non-square pixels even in this mode where
 it would be trivial to support.
+
+## Align an image to POIs
+
+```
+./manimal.py -a image.czi -p poi.csv -m matrix.csv
+```
+
+Move the image with right drag (or left drag in 'Move' mode). Add
+new pois or reg points, or drag existing ones as above.
+
+The matrix of the transformation from the starting position of
+the image to its final position is written into the file given by the
+`-m` or `--matrix`, or to standard out if such a file is not given.
 
 # Building the wheel
 
