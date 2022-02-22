@@ -5,7 +5,7 @@ import math
 import numpy as np
 import os
 import pathlib
-from PIL import Image, ImageTk
+from PIL import Image, ImageEnhance, ImageTk
 import queue
 import sys
 import threading
@@ -96,6 +96,7 @@ class ImageFile:
             )
             self.surface = [float(overall_z_element.text)]
         self.brightness = brightness
+        self.brightnessLoaded = brightness
 
     def readImage(self, queue, radius : int, scale, cx : int, cy : int):
         """
@@ -127,6 +128,7 @@ class ImageFile:
         )
         img = np.asarray(rescaled.astype(np.uint8))
         pil = Image.fromarray(img)
+        self.brightnessLoaded = self.brightness
         queue.put((pil, rect, scale, radius))
 
     def surfaceZ(self, x, y):
@@ -154,6 +156,14 @@ class ImageFile:
                 dist2 = d2
                 best = p[2]
         return best
+
+    def setBrightness(self, brightness):
+        self.brightness = brightness
+
+    def getBrightnessFactor(self):
+        if self.brightness == self.brightnessLoaded:
+            return 1.0  # do we need this? If IEEE implies that x/x == 1.0 (exactly) for every x then no
+        return self.brightness / self.brightnessLoaded
 
 class Screen:
     def __init__(self, canvas):
@@ -241,6 +251,9 @@ class ZoomableImage:
     def setTranslation(self, x, y):
         self.tx = x
         self.ty = y
+
+    def setBrightness(self, brightness):
+        self.czi.setBrightness(math.pow(10.0, float(brightness) / 10.0))
 
     def centre(self):
         """
@@ -477,12 +490,16 @@ class ZoomableImage:
         canvasY = math.floor(offsetY * magnification)
         canvasW = math.ceil(widthCrop * magnification)
         canvasH = math.ceil(heightCrop * magnification)
+        image = pil.resize(
+            (canvasW, canvasH),
+            resample=Image.NEAREST,
+            box=(leftCrop, topCrop, rightCrop, bottomCrop)
+        )
+        factor = self.czi.getBrightnessFactor()
+        if factor != 1.0:
+            image = ImageEnhance.Brightness(image).enhance(factor)
         return {
-            'image': pil.resize(
-                (canvasW, canvasH),
-                resample=Image.NEAREST,
-                box=(leftCrop, topCrop, rightCrop, bottomCrop)
-            ),
+            'image': image,
             'x': canvasX,
             'y': canvasY
         }
@@ -531,24 +548,40 @@ def readImages(inputQueue):
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0):
         super().__init__(master)
+        fixedBrightnessColumn = 0
+        slidingBrightnessColumn = 2
+        moveColumn = 4
+        poiColumn = 5
+        regColumn = 6
+        pinButtonColumn = 7
+        cancelColumn = 10
+        okColumn = 11
+        columnCount = 12
         self.grid(row=0, column=0, sticky='nsew')
         self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
-        self.okButton.grid(column=5, row=1, sticky="s")
+        self.okButton.grid(column=okColumn, row=1, sticky='s')
         master.bind('<Return>', lambda e: self.saveAndQuit())
         self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
-        self.cancelButton.grid(column=4, row=1, sticky="s")
+        self.cancelButton.grid(column=cancelColumn, row=1, sticky='s')
         master.bind('<Escape>', lambda e: self.quit())
         self.canvas = tk.Canvas(self)
-        self.canvas.grid(column=0, columnspan=12, row=0, sticky="nsew")
+        self.canvas.grid(column=0, columnspan=columnCount, row=0, sticky='nsew')
         self.screen = Screen(self.canvas)
         self.mode = tk.IntVar(value=0)
         if poi_file != None:
             self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
             self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
             self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
-            self.moveButton.grid(column=0, row=1, sticky="s")
-            self.poiButton.grid(column=1, row=1, sticky="s")
-            self.regButton.grid(column=2, row=1, sticky="s")
+            self.moveButton.grid(column=moveColumn, row=1, sticky='s')
+            self.poiButton.grid(column=poiColumn, row=1, sticky='s')
+            self.regButton.grid(column=regColumn, row=1, sticky='s')
+            self.grid_columnconfigure(moveColumn, weight=10)
+            self.grid_columnconfigure(poiColumn, weight=10)
+            self.grid_columnconfigure(regColumn, weight=10)
+        else:
+            self.grid_columnconfigure(moveColumn, weight=0)
+            self.grid_columnconfigure(poiColumn, weight=0)
+            self.grid_columnconfigure(regColumn, weight=0)
         self.poi_file = poi_file
         self.fixed = None
         if fixed:
@@ -571,8 +604,14 @@ class ManimalApplication(tk.Frame):
         self.pinButton = None
         self.sliding = None
         if sliding:
-            self.pinButton = tk.Button(self, text='Pin', relief='raised', command = self.toggleAxlePin)
-            self.pinButton.grid(column=3, row=1, sticky="s")
+            self.pinButton = tk.Button(
+                self,
+                text='Pin',
+                relief='raised',
+                command=self.toggleAxlePin
+            )
+            self.pinButton.grid(column=pinButtonColumn, row=1, sticky='s')
+            self.grid_columnconfigure(pinButtonColumn, weight=10)
             master.bind('p', lambda e: self.toggleAxlePin())
             self.sliding = ZoomableImage(
                 pathlib.Path(sliding), flip=flip
@@ -585,14 +624,39 @@ class ManimalApplication(tk.Frame):
                 )
             else:
                 self.screen.setTranslation(centreSliding[0], centreSliding[1])
+            text = 'brightness (sliding)' if fixed else 'brightness'
+            label = tk.Label(self, text=text)
+            label.grid(column=slidingBrightnessColumn, row=1, sticky='s')
+            self.slidingBrightnessSlider = tk.Scale(
+                self,
+                length=100, from_=-12, to=36, resolution=1,
+                orient='horizontal',
+                showvalue=False,
+                command=self.setSlidingBrightness
+            )
+            self.slidingBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
+            self.slidingBrightnessSlider.grid(column=slidingBrightnessColumn + 1, row=1, sticky='s')
+        else:
+            self.grid_columnconfigure(pinButtonColumn, weight=0)
+        self.grid_columnconfigure(slidingBrightnessColumn, weight=0)
+        self.grid_columnconfigure(slidingBrightnessColumn + 1, weight=0)
+        if fixed:
+            text = 'brightness (fixed)' if sliding else 'brightness'
+            label = tk.Label(self, text=text)
+            label.grid(column=fixedBrightnessColumn, row=1, sticky='s')
+            self.fixedBrightnessSlider = tk.Scale(
+                self,
+                length=100, from_=-12, to=36, resolution=1,
+                orient='horizontal',
+                showvalue=False,
+                command=self.setFixedBrightness
+            )
+            self.fixedBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
+            self.fixedBrightnessSlider.grid(column=fixedBrightnessColumn + 1, row=1, sticky='s')
+        self.grid_columnconfigure(fixedBrightnessColumn, weight=0)
+        self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=0)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(2, weight=1)
-        self.grid_columnconfigure(3, weight=self.pinButton and 1 or 0)
-        self.grid_columnconfigure(4, weight=0)
-        self.grid_columnconfigure(5, weight=0)
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
@@ -632,6 +696,14 @@ class ManimalApplication(tk.Frame):
             self.sliding.update()
         self.updateCanvas()
         self.after(1000, self.tick)
+
+    def setFixedBrightness(self, brightness):
+        self.fixed.setBrightness(brightness)
+        self.updateCanvas()
+
+    def setSlidingBrightness(self, brightness):
+        self.sliding.setBrightness(brightness)
+        self.updateCanvas()
 
     def removeAxlePin(self):
         if self.pinButton == None:
