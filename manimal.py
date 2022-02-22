@@ -28,6 +28,10 @@ def findNoGreaterThan(x, xs):
     return len(xs)
 
 def strip_zen_nonsense(h):
+    """
+    Zen adds a lot of weird stuff to a CSV when it saves it out.
+    Here we remove it.
+    """
     h = h.strip('"')
     start = h.find("::")
     start = 0 if start < 0 else start + 2
@@ -64,7 +68,7 @@ class CsvLoader:
             yield [c.strip('"') for c in r.split(',')]
 
 class ImageFile:
-    def __init__(self, path, brightness):
+    def __init__(self, path):
         czi = CziFile(path)
         self.czi = czi
         self.bbox = czi.get_mosaic_bounding_box()
@@ -95,10 +99,8 @@ class ImageFile:
                 or czi.meta.find('Metadata/HardwareSetting/ParameterCollection[@Id="MTBFocus"]/Position')
             )
             self.surface = [float(overall_z_element.text)]
-        self.brightness = brightness
-        self.brightnessLoaded = brightness
 
-    def readImage(self, queue, radius : int, scale, cx : int, cy : int):
+    def readImage(self, queue, radius : int, scale, cx : int, cy : int, brightness: float):
         """
         Enqueues an image read from the CZI file and other information:
         (np.ndarray, rect, scale, radius)
@@ -123,13 +125,12 @@ class ImageFile:
         rect = (left, top, width, height)
         data = self.czi.read_mosaic(rect, 1 / scale, C=0)
         rescaled = np.minimum(
-            np.multiply(data[0], self.brightness/256.0),
-            256.0
+            np.multiply(data[0], brightness/256.0),
+            255.0
         )
         img = np.asarray(rescaled.astype(np.uint8))
         pil = Image.fromarray(img)
-        self.brightnessLoaded = self.brightness
-        queue.put((pil, rect, scale, radius))
+        queue.put((pil, rect, scale, radius, brightness))
 
     def surfaceZ(self, x, y):
         """
@@ -157,13 +158,6 @@ class ImageFile:
                 best = p[2]
         return best
 
-    def setBrightness(self, brightness):
-        self.brightness = brightness
-
-    def getBrightnessFactor(self):
-        if self.brightness == self.brightnessLoaded:
-            return 1.0  # do we need this? If IEEE implies that x/x == 1.0 (exactly) for every x then no
-        return self.brightness / self.brightnessLoaded
 
 class Screen:
     def __init__(self, canvas):
@@ -223,11 +217,14 @@ class Screen:
 
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
-        self.czi = ImageFile(pathlib.Path(cziPath), brightness)
+        self.czi = ImageFile(pathlib.Path(cziPath))
         self.queue = queue.SimpleQueue()
         self.pil = None
         self.pilPosition = None
         self.pilRadius = 0
+        # the brightness of the image we last received
+        self.brightness = brightness
+        self.desiredBrightness = brightness
         self.pin = None # pin position in world co-ordinates
         # scale factor: cached image pixels * scale -> world co-ordinates
         self.scale = 1.0
@@ -253,7 +250,7 @@ class ZoomableImage:
         self.ty = y
 
     def setBrightness(self, brightness):
-        self.czi.setBrightness(math.pow(10.0, float(brightness) / 10.0))
+        self.desiredBrightness = math.pow(10.0, float(brightness) / 10.0)
 
     def centre(self):
         """
@@ -322,7 +319,7 @@ class ZoomableImage:
         try:
             while True:
                 block = count == 0 and self.pil == None
-                (i, p, z, r) = self.queue.get(block=block)
+                (i, p, z, r, b) = self.queue.get(block=block)
                 count += 1
         except queue.Empty:
             if count == 0:
@@ -332,6 +329,7 @@ class ZoomableImage:
         self.pilPosition = p
         self.scale = z # scaling of image compared to cache
         self.pilRadius = r
+        self.brightness = b
         return True
 
     def updateCacheIfNecessary(self, requestQueue, screen: Screen):
@@ -361,13 +359,15 @@ class ZoomableImage:
                 or x - radius < self.pilPosition[0]
                 or y - radius < self.pilPosition[1]
                 or self.pilPosition[0] + self.pilPosition[2] < x + radius
-                or self.pilPosition[1] + self.pilPosition[3] < y + radius):
+                or self.pilPosition[1] + self.pilPosition[3] < y + radius
+                or self.brightness != self.desiredBrightness):
             requestQueue.put(ImageReadRequest(
                 self,
                 cacheRadius,
                 screen.scale,
                 x,
-                y
+                y,
+                self.desiredBrightness
             ))
             self.waitingForRead = True
 
@@ -495,9 +495,9 @@ class ZoomableImage:
             resample=Image.NEAREST,
             box=(leftCrop, topCrop, rightCrop, bottomCrop)
         )
-        factor = self.czi.getBrightnessFactor()
-        if factor != 1.0:
-            image = ImageEnhance.Brightness(image).enhance(factor)
+        if self.brightness != self.desiredBrightness:
+            brightnessFactor = self.desiredBrightness / self.brightness
+            image = ImageEnhance.Brightness(image).enhance(brightnessFactor)
         return {
             'image': image,
             'x': canvasX,
@@ -519,7 +519,7 @@ class ZoomableImage:
         return bg
 
 class ImageReadRequest:
-    def __init__(self, image: ZoomableImage, radius: int, scale, cx: int, cy:int):
+    def __init__(self, image: ZoomableImage, radius: int, scale, cx: int, cy:int, brightness: float):
         """
         Prepare a request to read a portion of a CZI image to cache.
 
@@ -528,6 +528,7 @@ class ImageReadRequest:
             radius: The number of pixels to read in each direction from the (cx,cy)
             scale: The reciprocal of the scale factor required (so 2 gives a half-sized image)
             (cx, cy): The centre of the image to be read in image co-ordinates
+            brightness: How much to mulitply the image values by
         """
         self.queue = image.queue
         self.czi = image.czi
@@ -535,6 +536,8 @@ class ImageReadRequest:
         self.scale = scale
         self.cx = cx
         self.cy = cy
+        self.brightness = brightness
+
 
 def readImages(inputQueue):
     """
@@ -543,10 +546,10 @@ def readImages(inputQueue):
     """
     while True:
         i = inputQueue.get()
-        i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy)
+        i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy, i.brightness)
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0):
+    def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
         super().__init__(master)
         fixedBrightnessColumn = 0
         slidingBrightnessColumn = 2
@@ -592,8 +595,13 @@ class ManimalApplication(tk.Frame):
             centreFixed = self.fixed.centre()
             self.screen.setTranslation(centreFixed[0], centreFixed[1])
         self.matrix_file = matrix_file
-        flip = fixed and sliding and True or False
-        xflip = flip and -1 or 1
+        if flip == 'auto':
+            flip = bool(fixed)
+        elif flip == 'yes':
+            flip = True
+        else:
+            flip = False
+        xflip = -1 if flip else 1
         self.axlePin = None
         self.regPins = set([])
         self.poiPins = set([])
@@ -629,7 +637,7 @@ class ManimalApplication(tk.Frame):
             label.grid(column=slidingBrightnessColumn, row=1, sticky='s')
             self.slidingBrightnessSlider = tk.Scale(
                 self,
-                length=100, from_=-12, to=36, resolution=1,
+                length=100, from_=-6, to=24, resolution=1,
                 orient='horizontal',
                 showvalue=False,
                 command=self.setSlidingBrightness
@@ -646,7 +654,7 @@ class ManimalApplication(tk.Frame):
             label.grid(column=fixedBrightnessColumn, row=1, sticky='s')
             self.fixedBrightnessSlider = tk.Scale(
                 self,
-                length=100, from_=-12, to=36, resolution=1,
+                length=100, from_=-6, to=24, resolution=1,
                 orient='horizontal',
                 showvalue=False,
                 command=self.setFixedBrightness
@@ -679,6 +687,7 @@ class ManimalApplication(tk.Frame):
         self.updateCache()
         self.updateCanvas()
         self.loadPoisIfAvailable(self.poi_file)
+        self.axlePin = self.createPin('green', outline='white', hidden=True)
         self.tick()
 
     def updateCache(self):
@@ -913,12 +922,11 @@ class ManimalApplication(tk.Frame):
 
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
-        self.axlePin = self.canvas.create_polygon((0,0,0,1,1,1,1,0),
-            fill='green', joinstyle='miter', outline='black', state='hidden')
 
-    def createPin(self, color, outline='black'):
+    def createPin(self, color, outline='black', hidden=False):
+        state = 'hidden' if hidden else 'normal'
         return self.canvas.create_polygon((0,0,0,1,1,1),
-            fill=color, joinstyle='miter', outline=outline, state='normal')
+            fill=color, joinstyle='miter', outline=outline, state=state)
 
     def createRegPin(self):
         pin = self.createPin('yellow')
@@ -959,11 +967,19 @@ class ManimalApplication(tk.Frame):
             p = self.sliding.pinScreenPosition(self.screen)
             if p:
                 (x,y) = p
-                self.canvas.coords(self.axlePin, (x,y,x-5,y-15,x+5,y-15))
+                if self.axlePin == self.draggingPin:
+                    self.canvas.coords(self.axlePin, (x,y,x+5,y-15,x+15,y-5))
+                else:
+                    self.canvas.coords(self.axlePin, (x,y,x-5,y-15,x+5,y-15))
         self.image = ImageTk.PhotoImage(image)
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(
+    description= 'MANual IMage ALigner: '
+    + 'a GUI tool for manually aligning images with each other, '
+    + 'finding points of interest, '
+    + 'or aligning an image with existing points of interest.'
+)
 parser.add_argument(
     '-p',
     '--poi',
@@ -990,24 +1006,30 @@ parser.add_argument(
 parser.add_argument(
     '-f',
     '--fixed',
-    help='fixed image (.czi file)',
+    help='fixed image (.czi file) if desired',
     required=False,
     dest='fixed'
 )
 parser.add_argument(
     '-b',
     '--brightness',
-    help='brightness of the fixed image',
+    help='initial brightness of the fixed image',
     dest='fixed_brightness',
     required=False,
     type=float,
     metavar='BRIGHTNESS'
 )
+parser.add_argument(
+    '--flip',
+    help='whether to flip the sliding image. Default (auto) means yes if --fixed is used, no otherwise',
+    choices=['no', 'yes', 'auto'],
+    default='auto'
+)
 options = parser.parse_args()
 
 kw = {
 }
-for attr in ['poi_file', 'sliding', 'matrix_file', 'fixed_brightness', 'fixed']:
+for attr in ['poi_file', 'sliding', 'matrix_file', 'fixed_brightness', 'fixed', 'flip']:
     v = getattr(options, attr, None)
     if v != None:
         kw[attr] = v
