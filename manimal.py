@@ -5,11 +5,12 @@ import math
 import numpy as np
 import os
 import pathlib
-from PIL import Image, ImageEnhance, ImageTk
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageTk
 import queue
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 
 def add2D(a, b):
     return (a[0] + b[0], a[1] + b[1])
@@ -67,8 +68,46 @@ class CsvLoader:
         for r in self.rows:
             yield [c.strip('"') for c in r.split(',')]
 
+
 class ImageFile:
     def __init__(self, path):
+        pass
+    def readImage(self, queue, radius : int, scale, cx : int, cy : int, brightness: float):
+        raise NotImplementedError('readImage')
+    def surfaceZ(self, x, y):
+        return 0
+    def getBbox(self):
+        raise NotImplementedError('readImage')
+    def getPixelSize(self):
+        return None
+    def close(self):
+        pass
+
+
+class Bbox:
+    def __init__(self, x, y, w, h):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+
+class PillowImageFile(ImageFile):
+    def  __init__(self, path):
+        super().__init__(path)
+        self.im = Image.open(path)
+        self.bbox = Bbox(0, 0, self.im.width, self.im.height)
+        self.radius = max(self.im.width, self.im.height)
+    def readImage(self, queue, radius : int, scale, cx : int, cy : int, brightness: float):
+        queue.put((self.im, (0, 0, self.im.width, self.im.height), 1, self.radius, 1))
+    def getBbox(self):
+        return self.bbox
+    def close(self):
+        self.im.close()
+        super().close()
+
+class CziImageFile(ImageFile):
+    def __init__(self, path):
+        super().__init__(path)
         czi = CziFile(path)
         self.czi = czi
         self.bbox = czi.get_mosaic_bounding_box()
@@ -158,6 +197,27 @@ class ImageFile:
                 best = p[2]
         return best
 
+    def getBbox(self):
+        return self.bbox
+
+    def getPixelSize(self):
+        return self.pixelSize
+
+
+fileTypes = {
+    '.czi': CziImageFile,
+    '.jpg': PillowImageFile,
+    '.jpeg': PillowImageFile,
+    '.JPG': PillowImageFile
+}
+
+
+def loadImage(path):
+    (base, ext) = os.path.splitext(path)
+    if ext in fileTypes:
+        return fileTypes[ext](path)
+    raise Exception('Did not understand {0} file type'.format(ext))
+
 
 class Screen:
     def __init__(self, canvas):
@@ -168,6 +228,9 @@ class Screen:
 
     def setScale(self, scale):
         self.scale = scale
+
+    def getScale(self):
+        return self.scale
 
     def setTranslation(self, x, y):
         self.panX = x
@@ -217,7 +280,7 @@ class Screen:
 
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
-        self.czi = ImageFile(pathlib.Path(cziPath))
+        self.czi = loadImage(pathlib.Path(cziPath))
         self.queue = queue.SimpleQueue()
         self.pil = None
         self.pilPosition = None
@@ -238,9 +301,12 @@ class ZoomableImage:
 
     def pixelSize(self):
         """
-        Returns pixelSize in micrometers.
+        Returns pixelSize in micrometers, or 1 if pixel size is not known.
         """
-        return self.czi.pixelSize * 1e6
+        s = self.czi.getPixelSize()
+        if s:
+            return s * 1e6
+        return 1
 
     def setAngle(self, angle):
         self.angle = angle
@@ -256,7 +322,7 @@ class ZoomableImage:
         """
         returns the centre of the whole image in image co-ordinates.
         """
-        bbox = self.czi.bbox
+        bbox = self.czi.getBbox()
         return (
             bbox.x + bbox.w // 2,
             bbox.y + bbox.h // 2
@@ -348,7 +414,7 @@ class ZoomableImage:
         # clamp to within the bounding box of the image - radius
         # (we are assuming here that bbox.w and bbox.h are at least 2*cacheRadius, which
         # will be true for the images we care about)
-        bbox = self.czi.bbox
+        bbox = self.czi.getBbox()
         x = max(bbox.x + cacheRadius, min(bbox.x + bbox.w - cacheRadius, x))
         y = max(bbox.y + cacheRadius, min(bbox.y + bbox.h - cacheRadius, y))
         # if we are not within the old radius, request a new cache update
@@ -548,6 +614,62 @@ def readImages(inputQueue):
         i = inputQueue.get()
         i.czi.readImage(i.queue, i.radius, i.scale, i.cx, i.cy, i.brightness)
 
+
+class ScaleBar:
+    def __init__(self, canvas):
+        self.bottom = 50
+        self.right = 50
+        self.height = 12
+        self.canvas = canvas
+        self.sections = []
+        for i in range(0,10):
+            col = '#FFFFFF' if i % 2 == 0 else '#808080'
+            self.sections.append(canvas.create_rectangle(
+                (0,0,1,1), fill=col, state='hidden', outline=''
+            ))
+        self.font = tkfont.Font(family='Sans', size=9)
+        self.micrometers = '\xb5m'
+        if self.font.measure('\xb5') == 0:
+            self.micrometers = 'um'
+        self.text = canvas.create_text(
+            (0,0), fill='#000000', font=self.font, state='hidden'
+        )
+    def show(self, maxLength, maxMicrons):
+        magnitude = math.floor(math.log10(maxMicrons))
+        microns = math.pow(10.0, magnitude)
+        ticks = 10
+        if microns * 5.0 <= maxMicrons:
+            microns *= 5.0
+            ticks = 5
+        elif microns * 2.0 <= maxMicrons:
+            microns *= 2.0
+            ticks = 2
+        pixels = microns * maxLength / maxMicrons
+        x = self.canvas.winfo_width() - self.right
+        y = self.canvas.winfo_height() - self.bottom
+        x0 = x - pixels
+        y0 = y - self.height
+        xprev = math.floor(x0 + 0.5)
+        for t in range(0, ticks):
+            xe = math.floor(x0 + pixels * (t+1) / ticks)
+            self.canvas.coords(self.sections[t], (xprev, y0, xe, y))
+            self.canvas.itemconfigure(self.sections[t], state='normal')
+            xprev = xe
+        for t in range(ticks, len(self.sections)):
+            self.canvas.itemconfigure(self.sections[t], state='hidden')
+        units = self.micrometers
+        v = math.floor(microns)
+        if microns < 1:
+            v = math.floor(microns*1000)
+            units = 'nm'
+        elif 1000 <= microns:
+            v = math.floor(microns / 1000)
+            units = 'mm'
+        self.canvas.coords(self.text, (x - pixels / 2, y - self.height / 2))
+        self.canvas.itemconfigure(
+            self.text, text='{0} {1}'.format(v, units), state='normal'
+        )
+
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
         super().__init__(master)
@@ -683,6 +805,7 @@ class ManimalApplication(tk.Frame):
         self.readThread.daemon = True
         self.readThread.start()
         self.createCanvas()
+        self.scaleBar = ScaleBar(self.canvas)
         self.update_idletasks()
         self.updateCache()
         self.updateCanvas()
@@ -772,11 +895,19 @@ class ManimalApplication(tk.Frame):
                 self.saveMatrix()
         super().quit()
 
+    def pixelSize(self):
+        pixelSize = None
+        if self.fixed:
+            pixelSize = self.fixed.pixelSize()
+        if not pixelSize and self.sliding:
+            pixelSize = self.sliding.pixelSize()
+        return pixelSize
+
     def loadPois(self, fh):
         csv = CsvLoader(fh)
         if not csv.headersAre('type,x,y,z,name'):
             raise Exception('Could not understand csv file')
-        scale = self.fixed.pixelSize() if self.fixed else self.sliding.pixelSize()
+        scale = self.pixelSize()
         for (t,x,y,z,name) in csv.generateRows():
             if t == 'i':
                 if len(name) == 0:
@@ -943,6 +1074,15 @@ class ManimalApplication(tk.Frame):
         self.podPins.add(pin)
         return pin
 
+    def showScaleBar(self):
+        pixelSize = self.pixelSize()
+        if not pixelSize:
+            return
+        pixelSize *= self.screen.getScale()
+        scaleBarWidth = 300
+        maxMicrons = pixelSize * scaleBarWidth
+        self.scaleBar.show(scaleBarWidth, maxMicrons)
+
     def updateCanvas(self, pin=None):
         self.updateCache()
         image = None
@@ -972,6 +1112,7 @@ class ManimalApplication(tk.Frame):
                 else:
                     self.canvas.coords(self.axlePin, (x,y,x-5,y-15,x+5,y-15))
         self.image = ImageTk.PhotoImage(image)
+        self.showScaleBar()
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
 
 parser = argparse.ArgumentParser(
