@@ -10,6 +10,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from tkinter import ttk
 import tkinter.font as tkfont
 
 def add2D(a, b):
@@ -670,43 +671,77 @@ class ScaleBar:
             self.text, text='{0} {1}'.format(v, units), state='normal'
         )
 
+class SaveDialog(tk.Toplevel):
+    def __init__(self, parent, saveFn, quitFn):
+        super().__init__(parent)
+        self.saveFn = saveFn
+        self.quitFn = quitFn
+        self.title('Save changes?')
+        text = tk.Label(self, text='Do you want to save your changes?')
+        text.grid(row=0, column=0, columnspan=3)
+        save = tk.Button(self, text='Save', command=self.save)
+        save.grid(row=1, column=0)
+        dont = tk.Button(self, text="Don't save", command=self.dont)
+        dont.grid(row=1, column=1)
+        cancel = tk.Button(self, text='Cancel', command=self.cancel)
+        cancel.grid(row=1, column=2)
+        self.grid()
+    def destroy(self):
+        super().destroy()
+    def save(self, event=None):
+        self.saveFn()
+        self.quitFn()
+        self.destroy()
+    def dont(self, event=None):
+        self.quitFn()
+        self.destroy()
+    def cancel(self, event=None):
+        self.destroy()
+
+
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
         super().__init__(master)
         fixedBrightnessColumn = 0
         slidingBrightnessColumn = 2
-        moveColumn = 4
-        poiColumn = 5
-        regColumn = 6
+        leftClickColumn = 4
+        rightClickColumn = 5
         pinButtonColumn = 7
-        cancelColumn = 10
-        okColumn = 11
+        closeColumn = 10
+        saveColumn = 11
         columnCount = 12
+        self.changed = False
         self.grid(row=0, column=0, sticky='nsew')
-        self.okButton = tk.Button(self, text='OK', command = self.saveAndQuit)
-        self.okButton.grid(column=okColumn, row=1, sticky='s')
+        self.saveButton = tk.Button(self, text='Save', command = self.save)
+        self.saveButton.grid(column=saveColumn, row=1, sticky='s')
         master.bind('<Return>', lambda e: self.saveAndQuit())
-        self.cancelButton = tk.Button(self, text='cancel', command = self.quit)
-        self.cancelButton.grid(column=cancelColumn, row=1, sticky='s')
-        master.bind('<Escape>', lambda e: self.quit())
+        master.bind('s', lambda e: self.save())
+        self.closeButton = tk.Button(self, text='Close', command = self.maybeQuit)
+        self.closeButton.grid(column=closeColumn, row=1, sticky='s')
+        master.bind('<Escape>', lambda e: self.maybeQuit())
         self.canvas = tk.Canvas(self)
         self.canvas.grid(column=0, columnspan=columnCount, row=0, sticky='nsew')
         self.screen = Screen(self.canvas)
         self.mode = tk.IntVar(value=0)
+        self.mouseFunctionMove = 'move'
+        self.mouseFunctionAddPoi = 'add POI'
+        self.mouseFunctionAddRegPoint = 'add Reg. point'
+        self.mouseFunctionSlide = 'slide'
+        self.mouseDownFunction = {
+            self.mouseFunctionMove: self.noop,
+            self.mouseFunctionAddPoi: self.dragStartAddPoi,
+            self.mouseFunctionAddRegPoint: self.dragStartAddRegPoint,
+            self.mouseFunctionSlide: self.dragStartSlide
+        }
+        self.mouseDragFunction = {
+            self.mouseFunctionMove: self.dragPan,
+            self.mouseFunctionAddPoi: self.noop,
+            self.mouseFunctionAddRegPoint: self.noop,
+            self.mouseFunctionSlide: self.dragSlide
+        }
+        functions = [self.mouseFunctionMove]
         if poi_file != None:
-            self.moveButton = tk.Radiobutton(self, text='Move', variable=self.mode, value=0)
-            self.poiButton = tk.Radiobutton(self, text='POI', variable=self.mode, value=1)
-            self.regButton = tk.Radiobutton(self, text='Reg. point', variable=self.mode, value=2)
-            self.moveButton.grid(column=moveColumn, row=1, sticky='s')
-            self.poiButton.grid(column=poiColumn, row=1, sticky='s')
-            self.regButton.grid(column=regColumn, row=1, sticky='s')
-            self.grid_columnconfigure(moveColumn, weight=10)
-            self.grid_columnconfigure(poiColumn, weight=10)
-            self.grid_columnconfigure(regColumn, weight=10)
-        else:
-            self.grid_columnconfigure(moveColumn, weight=0)
-            self.grid_columnconfigure(poiColumn, weight=0)
-            self.grid_columnconfigure(regColumn, weight=0)
+            functions += [self.mouseFunctionAddPoi, self.mouseFunctionAddRegPoint]
         self.poi_file = poi_file
         self.fixed = None
         if fixed:
@@ -731,9 +766,13 @@ class ManimalApplication(tk.Frame):
         self.pinCoords = {}
         self.pinNames = {}
         self.draggingPin = None
+        self.unknownPois = []
         self.pinButton = None
         self.sliding = None
         if sliding:
+            functions.append(
+                self.mouseFunctionSlide
+            )
             self.pinButton = tk.Button(
                 self,
                 text='Pin',
@@ -785,15 +824,40 @@ class ManimalApplication(tk.Frame):
             self.fixedBrightnessSlider.grid(column=fixedBrightnessColumn + 1, row=1, sticky='s')
         self.grid_columnconfigure(fixedBrightnessColumn, weight=0)
         self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=0)
+        self.leftClickFunctionSelector = ttk.Combobox(
+            self, values=functions, state='readonly'
+        )
+        self.leftClickFunctionSelector.grid(column=leftClickColumn, row=1)
+        self.leftClickFunctionSelector.set(self.mouseFunctionMove)
+        self.grid_columnconfigure(leftClickColumn, weight=10)
+        self.rightClickFunctionSelector = ttk.Combobox(
+            self, values=functions, state='readonly'
+        )
+        self.rightClickFunctionSelector.grid(column=rightClickColumn, row=1)
+        self.rightClickFunctionSelector.set(self.mouseFunctionMove)
+        self.grid_columnconfigure(rightClickColumn, weight=10)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
-        self.canvas.bind("<Button-1>", lambda e: self.dragStart(e.x, e.y))
-        self.canvas.bind("<ButtonRelease-1>", lambda e: self.dragEnd(e.x, e.y))
-        self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(e.x, e.y))
-        self.canvas.bind("<Button-3>", lambda e: self.rightDragStart(e.x, e.y))
-        self.canvas.bind("<B3-Motion>", lambda e: self.rightDragMove(e.x, e.y))
+        self.canvas.bind("<Button-1>", lambda e: self.dragStart(
+            e.x, e.y, self.leftClickFunctionSelector.get()
+        ))
+        self.canvas.bind("<ButtonRelease-1>", lambda e: self.dragEnd(
+            e.x, e.y, self.leftClickFunctionSelector.get()
+        ))
+        self.canvas.bind("<B1-Motion>", lambda e: self.dragMove(
+            e.x, e.y, self.leftClickFunctionSelector.get()
+        ))
+        self.canvas.bind("<Button-3>", lambda e: self.dragStart(
+            e.x, e.y, self.rightClickFunctionSelector.get()
+        ))
+        self.canvas.bind("<ButtonRelease-3>", lambda e: self.dragEnd(
+            e.x, e.y, self.rightClickFunctionSelector.get()
+        ))
+        self.canvas.bind("<B3-Motion>", lambda e: self.dragMove(
+            e.x, e.y, self.rightClickFunctionSelector.get()
+        ))
         self.canvas.bind("<MouseWheel>", lambda e: self.zoomChange(e.delta, e.x, e.y))
         self.canvas.bind("<Button-4>", lambda e: self.zoomChange(-120, e.x, e.y))
         self.canvas.bind("<Button-5>", lambda e: self.zoomChange(120, e.x, e.y))
@@ -867,6 +931,8 @@ class ManimalApplication(tk.Frame):
 
     def savePois(self, **kwargs):
         print('type,x,y,z,name', **kwargs)
+        for (t,x,y,z,name) in self.unknownPois:
+            print('{0},{1},{2},{3},{4}'.format(t,x,y,z,name), **kwargs)
         image = self.fixed or self.sliding
         scale = image.pixelSize()
         for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
@@ -883,7 +949,7 @@ class ManimalApplication(tk.Frame):
         for row in self.sliding.getMicrometerMatrix():
             print(','.join(map(str, row)), **kwargs)
 
-    def saveAndQuit(self):
+    def save(self):
         if self.poi_file:
             with open(self.poi_file, 'w') as fh:
                 self.savePois(file=fh)
@@ -893,7 +959,16 @@ class ManimalApplication(tk.Frame):
                     self.saveMatrix(file=fh)
             else:
                 self.saveMatrix()
+        self.changed = False
+
+    def saveAndQuit(self):
+        self.save()
         super().quit()
+
+    def maybeQuit(self):
+        if self.changed:
+            self.wait_window(SaveDialog(self, self.save, self.quit))
+        self.quit()
 
     def pixelSize(self):
         pixelSize = None
@@ -907,8 +982,10 @@ class ManimalApplication(tk.Frame):
         csv = CsvLoader(fh)
         if not csv.headersAre('type,x,y,z,name'):
             raise Exception('Could not understand csv file')
+        self.unknownPois = []
         scale = self.pixelSize()
         for (t,x,y,z,name) in csv.generateRows():
+            pin = None
             if t == 'i':
                 if len(name) == 0:
                     pin = self.createPoiPin()
@@ -916,10 +993,11 @@ class ManimalApplication(tk.Frame):
                     pin = self.createPodPin()
                     self.pinNames[pin] = name
             elif t == 'r':
-                    pin = self.createRegPin()
+                pin = self.createRegPin()
             else:
-                raise Exception('Did not understand pin type {0}'.format(t))
-            self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
+                self.unknownPois.append((t,x,y,z,name))
+            if pin:
+                self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
 
     def loadPoisIfAvailable(self, fn):
         if fn and os.path.exists(fn):
@@ -954,8 +1032,10 @@ class ManimalApplication(tk.Frame):
         self.draggingPin = None
         if p in self.regPins:
             self.regPins.remove(p)
+            self.changed = True
         elif p in self.poiPins:
             self.poiPins.remove(p)
+            self.changed = True
         elif p == self.axlePin:
             self.removeAxlePin()
 
@@ -971,11 +1051,34 @@ class ManimalApplication(tk.Frame):
             self.screen.zoomChange(self.zoomLevels[scaleIndex + 1], x, y)
         self.updateCanvas()
 
-    def rightDragStart(self, x, y):
-        self.screen.dragStart(x, y)
+    def noop(self, x, y):
+        pass
 
-    def dragStart(self, x, y):
-        update = False
+    def dragStartAddPoi(self, x, y):
+        p = self.createPoiPin()
+        self.pinCoords[p] = self.screen.toWorld(x, y)
+        self.updateCanvas()
+        self.changed = True
+
+    def dragStartAddRegPoint(self, x, y):
+        p = self.createRegPin()
+        self.pinCoords[p] = self.screen.toWorld(x, y)
+        self.updateCanvas()
+        self.changed = True
+
+    def dragStartSlide(self, x, y):
+        self.sliding.dragStart(self.screen, x, y)
+
+    def dragSlide(self, x, y):
+        self.sliding.dragMove(self.screen, x, y)
+        self.updateCanvas()
+        self.changed = True
+
+    def dragPan(self, x, y):
+        self.screen.dragMove(x, y)
+        self.updateCanvas()
+
+    def dragStart(self, x, y, funcName):
         self.screen.dragStart(x, y)
         p = self.regPinAt(x, y)
         if not p:
@@ -988,35 +1091,23 @@ class ManimalApplication(tk.Frame):
             self.deleteDraggingPin()
             self.draggingPin = p
         elif self.draggingPin == None:
-            # Not clicked a pin, if we are in one of the pin modes
-            # we need to add a new one
-            m = self.mode.get()
-            if m == 1:
-                p = self.createPoiPin()
-                self.pinCoords[p] = self.screen.toWorld(x, y)
-                update = True
-            elif m == 2:
-                p = self.createRegPin()
-                self.pinCoords[p] = self.screen.toWorld(x, y)
-                update = True
-            elif self.sliding != None:
-                self.sliding.dragStart(self.screen, x, y)
-        if self.draggingPin:
-            ps = self.canvas.coords(self.draggingPin)
-            px = ps[0]
-            py = ps[1]
-            for i in range(2, len(ps) // 2):
-                py0 = ps[i*2+1]
-                if py < py0:
-                    px = ps[i*2]
-                    py = py0
-            self.draggingPinOffsetX = px - x
-            self.draggingPinOffsetY = py - y
-            update = True
-        if update:
-            self.updateCanvas()
+            # Not clicked a pin, so do whatever is selected for this button
+            return self.mouseDownFunction[funcName](x, y)
+        if not self.draggingPin:
+            return
+        ps = self.canvas.coords(self.draggingPin)
+        px = ps[0]
+        py = ps[1]
+        for i in range(2, len(ps) // 2):
+            py0 = ps[i*2+1]
+            if py < py0:
+                px = ps[i*2]
+                py = py0
+        self.draggingPinOffsetX = px - x
+        self.draggingPinOffsetY = py - y
+        self.updateCanvas()
 
-    def dragEnd(self, x, y):
+    def dragEnd(self, x, y, funcName):
         if self.draggingPin:
             if x < 0 or y < 0 or self.screen.width() < x or self.screen.height() < y:
                 self.deleteDraggingPin()
@@ -1027,14 +1118,11 @@ class ManimalApplication(tk.Frame):
                     self.draggingPinOffsetX + x,
                     self.draggingPinOffsetY + y
                 )
+                self.changed = True
             self.draggingPin = None
             self.updateCanvas()
-
-    def rightDragMove(self, x, y):
-        self.screen.dragMove(x, y)
-        self.updateCanvas()
-
-    def dragMove(self, x, y):
+    
+    def dragMove(self, x, y, funcName):
         if self.draggingPin:
             if self.draggingPin == self.axlePin:
                 self.sliding.dragMove(self.screen, x, y)
@@ -1043,14 +1131,11 @@ class ManimalApplication(tk.Frame):
                     self.draggingPinOffsetX + x,
                     self.draggingPinOffsetY + y
                 )
-        elif not self.sliding:
-            self.screen.dragMove(x, y)
-        elif self.mode.get() == 0:
-            self.sliding.dragMove(self.screen, x, y)
+                self.changed = True
+            self.updateCanvas()
         else:
-            return
-        self.updateCanvas()
-
+            self.mouseDragFunction[funcName](x, y)
+    
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
 
@@ -1060,16 +1145,25 @@ class ManimalApplication(tk.Frame):
             fill=color, joinstyle='miter', outline=outline, state=state)
 
     def createRegPin(self):
+        """
+        Create registration point pin
+        """
         pin = self.createPin('yellow')
         self.regPins.add(pin)
         return pin
 
     def createPoiPin(self):
+        """
+        Create point of interest pin
+        """
         pin = self.createPin('white')
         self.poiPins.add(pin)
         return pin
 
     def createPodPin(self):
+        """
+        Create point of interest (with z-stack already captured) pin
+        """
         pin = self.createPin('grey24', outline='grey64')
         self.podPins.add(pin)
         return pin
