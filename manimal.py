@@ -702,13 +702,13 @@ class SaveDialog(tk.Toplevel):
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
         super().__init__(master)
-        fixedBrightnessColumn = 0
-        slidingBrightnessColumn = 2
-        leftClickColumn = 4
-        rightClickColumn = 5
-        pinButtonColumn = 7
-        closeColumn = 10
-        saveColumn = 11
+        saveColumn = 0
+        fixedBrightnessColumn = 1
+        slidingBrightnessColumn = 3
+        pinButtonColumn = 5
+        leftClickColumn = 6
+        rightClickColumn = 8
+        closeColumn = 11
         columnCount = 12
         self.changed = False
         self.grid(row=0, column=0, sticky='nsew')
@@ -824,18 +824,26 @@ class ManimalApplication(tk.Frame):
             self.fixedBrightnessSlider.grid(column=fixedBrightnessColumn + 1, row=1, sticky='s')
         self.grid_columnconfigure(fixedBrightnessColumn, weight=0)
         self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=0)
+        tk.Label(self, text='left mouse button:').grid(
+            column=leftClickColumn, row=1, sticky='se'
+        )
         self.leftClickFunctionSelector = ttk.Combobox(
             self, values=functions, state='readonly'
         )
-        self.leftClickFunctionSelector.grid(column=leftClickColumn, row=1)
+        self.leftClickFunctionSelector.grid(column=leftClickColumn+1, row=1, sticky='sw')
         self.leftClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(leftClickColumn, weight=10)
+        self.grid_columnconfigure(leftClickColumn, weight=0)
+        self.grid_columnconfigure(leftClickColumn+1, weight=10)
+        tk.Label(self, text='right mouse button:').grid(
+            column=rightClickColumn, row=1, sticky='se'
+        )
         self.rightClickFunctionSelector = ttk.Combobox(
             self, values=functions, state='readonly'
         )
-        self.rightClickFunctionSelector.grid(column=rightClickColumn, row=1)
+        self.rightClickFunctionSelector.grid(column=rightClickColumn+1, row=1, sticky='sw')
         self.rightClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(rightClickColumn, weight=10)
+        self.grid_columnconfigure(rightClickColumn, weight=0)
+        self.grid_columnconfigure(rightClickColumn+1, weight=10)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
         self.grid_rowconfigure(0, weight=1)
