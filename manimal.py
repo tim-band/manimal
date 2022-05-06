@@ -710,6 +710,8 @@ class ManimalApplication(tk.Frame):
         rightClickColumn = 8
         closeColumn = 11
         columnCount = 12
+        labelWeight = 10
+        clickColumnWeight = 6
         self.changed = False
         self.grid(row=0, column=0, sticky='nsew')
         self.saveButton = tk.Button(self, text='Save', command = self.save)
@@ -780,7 +782,7 @@ class ManimalApplication(tk.Frame):
                 command=self.toggleAxlePin
             )
             self.pinButton.grid(column=pinButtonColumn, row=1, sticky='s')
-            self.grid_columnconfigure(pinButtonColumn, weight=10)
+            self.grid_columnconfigure(pinButtonColumn, weight=1)
             master.bind('p', lambda e: self.toggleAxlePin())
             self.sliding = ZoomableImage(
                 pathlib.Path(sliding), flip=flip
@@ -805,10 +807,8 @@ class ManimalApplication(tk.Frame):
             )
             self.slidingBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.slidingBrightnessSlider.grid(column=slidingBrightnessColumn + 1, row=1, sticky='s')
-        else:
-            self.grid_columnconfigure(pinButtonColumn, weight=0)
-        self.grid_columnconfigure(slidingBrightnessColumn, weight=0)
-        self.grid_columnconfigure(slidingBrightnessColumn + 1, weight=0)
+            self.grid_columnconfigure(slidingBrightnessColumn, weight=labelWeight)
+            self.grid_columnconfigure(slidingBrightnessColumn + 1, weight=1)
         if fixed:
             text = 'brightness (fixed)' if sliding else 'brightness'
             label = tk.Label(self, text=text)
@@ -822,8 +822,8 @@ class ManimalApplication(tk.Frame):
             )
             self.fixedBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.fixedBrightnessSlider.grid(column=fixedBrightnessColumn + 1, row=1, sticky='s')
-        self.grid_columnconfigure(fixedBrightnessColumn, weight=0)
-        self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=0)
+            self.grid_columnconfigure(fixedBrightnessColumn, weight=labelWeight)
+            self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=1)
         tk.Label(self, text='left mouse button:').grid(
             column=leftClickColumn, row=1, sticky='se'
         )
@@ -832,8 +832,8 @@ class ManimalApplication(tk.Frame):
         )
         self.leftClickFunctionSelector.grid(column=leftClickColumn+1, row=1, sticky='sw')
         self.leftClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(leftClickColumn, weight=0)
-        self.grid_columnconfigure(leftClickColumn+1, weight=10)
+        self.grid_columnconfigure(leftClickColumn, weight=labelWeight)
+        self.grid_columnconfigure(leftClickColumn+1, weight=clickColumnWeight)
         tk.Label(self, text='right mouse button:').grid(
             column=rightClickColumn, row=1, sticky='se'
         )
@@ -842,8 +842,8 @@ class ManimalApplication(tk.Frame):
         )
         self.rightClickFunctionSelector.grid(column=rightClickColumn+1, row=1, sticky='sw')
         self.rightClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(rightClickColumn, weight=0)
-        self.grid_columnconfigure(rightClickColumn+1, weight=10)
+        self.grid_columnconfigure(rightClickColumn, weight=labelWeight)
+        self.grid_columnconfigure(rightClickColumn+1, weight=clickColumnWeight)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
         self.grid_rowconfigure(0, weight=1)
