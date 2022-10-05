@@ -139,6 +139,7 @@ class CziImageFile(ImageFile):
                 or czi.meta.find('Metadata/HardwareSetting/ParameterCollection[@Id="MTBFocus"]/Position')
             )
             self.surface = [float(overall_z_element.text)]
+        self.imageBits = int(czi.meta.find('Metadata/Information/Image/ComponentBitCount').text)
 
     def readImage(self, queue, radius : int, scale, cx : int, cy : int, brightness: float):
         """
@@ -164,11 +165,14 @@ class CziImageFile(ImageFile):
         height = bottom - top
         rect = (left, top, width, height)
         data = self.czi.read_mosaic(rect, 1 / scale, C=0)
-        rescaled = np.minimum(
-            np.multiply(data[0], brightness/256.0),
-            255.0
-        )
-        img = np.asarray(rescaled.astype(np.uint8))
+        pil_type = np.uint8
+        data = self.czi.read_mosaic(region=source, scale_factor=1/scale, C=0)
+        pil_bits = 8 * pil_type(0).nbytes
+        rescaled = np.floor(np.minimum(
+            np.multiply(data[0], brightness * 2**(pil_bits - self.imageBits)),
+            2**pil_bits - 1
+        ))
+        img = np.asarray(rescaled.astype(pil_type))
         pil = Image.fromarray(img)
         queue.put((pil, rect, scale, radius, brightness))
 
