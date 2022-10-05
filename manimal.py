@@ -166,7 +166,7 @@ class CziImageFile(ImageFile):
         rect = (left, top, width, height)
         data = self.czi.read_mosaic(rect, 1 / scale, C=0)
         pil_type = np.uint8
-        data = self.czi.read_mosaic(region=source, scale_factor=1/scale, C=0)
+        data = self.czi.read_mosaic(region=rect, scale_factor=1/scale, C=0)
         pil_bits = 8 * pil_type(0).nbytes
         rescaled = np.floor(np.minimum(
             np.multiply(data[0], brightness * 2**(pil_bits - self.imageBits)),
@@ -980,7 +980,8 @@ class ManimalApplication(tk.Frame):
     def maybeQuit(self):
         if self.changed:
             self.wait_window(SaveDialog(self, self.save, self.quit))
-        self.quit()
+        else:
+            self.quit()
 
     def pixelSize(self):
         pixelSize = None
