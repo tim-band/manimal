@@ -1,6 +1,7 @@
 #! /usr/bin/env python3
 from aicspylibczi import CziFile
 import argparse
+import itertools
 import math
 import numpy as np
 import os
@@ -283,6 +284,54 @@ class Screen:
         self.panX += ds * mx
         self.panY += ds * my
 
+    def createPin(self, fill, outline, x=0, y=0):
+        return self.canvas.create_polygon(self.getPinShape(x, y),
+            fill=fill, joinstyle='miter', outline=outline, state='normal'
+        )
+
+    def deletePin(self, id):
+        if id is not None:
+            self.canvas.delete(id)
+
+    def hidePin(self, id):
+        if id is not None:
+            self.canvas.itemconfigure(id, state='hidden')
+
+    def showPin(self, id):
+        if id is not None:
+            self.canvas.itemconfigure(id, state='normal')
+
+    def setPinColours(self, id, fill, outline):
+        self.canvas.itemconfigure(id, fill=fill, outline=outline)
+
+    def movePinTo(self, id, x, y, dragging):
+        self.canvas.coords(id, self.getPinShape(x, y, dragging))
+
+    def getPinShape(self, x, y, dragging=False):
+        (x, y) = self.fromWorld(x, y)
+        return (
+            x, y, x+5, y-15, x+15, y-5
+        ) if dragging else (
+            x, y, x+5, y-15, x-5, y-15
+        )
+
+    def overlappingIds(self, x, y):
+        """
+        Returns the IDs of the screen objects at screen co-ordinates (x,y)
+        """
+        return self.canvas.find_overlapping(x, y, x+1, y+1)
+
+    def canvasId(self):
+        return self.canvas.winfo_id()
+
+
+class OverviewScreen(Screen):
+    def getPinShape(self, x, y):
+        return self.fromWorld(x, y)
+    def setPinColours(self, id, fill, outline):
+        self.canvas.itemconfigure(id, fill=fill, outline=fill)
+
+
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
         self.czi = loadImage(pathlib.Path(cziPath))
@@ -517,7 +566,7 @@ class ZoomableImage:
         pil = self.pil
         # create rotated flipped cached portion
         if self.flip < 0:
-            pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
+            pil = pil.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         pil = pil.rotate(self.angle * 180 / math.pi)
         # set  leftPil, topPil, widthPil and heightPil to adjust for the new
         # image's dimensions
@@ -563,7 +612,7 @@ class ZoomableImage:
         canvasH = math.ceil(heightCrop * magnification)
         image = pil.resize(
             (canvasW, canvasH),
-            resample=Image.NEAREST,
+            resample=Image.Resampling.NEAREST,
             box=(leftCrop, topCrop, rightCrop, bottomCrop)
         )
         if self.brightness != self.desiredBrightness:
@@ -702,6 +751,211 @@ class SaveDialog(tk.Toplevel):
     def cancel(self, event=None):
         self.destroy()
 
+class Pin:
+    CHARACTER = 'i'
+    def __init__(self, colour, outline='black', x=0, y=0, hidden=False):
+        """ (x, y) is the position in pixels """
+        self.x = x
+        self.y = y
+        self.colour = colour
+        self.outline = outline
+        self.state = 'hidden' if hidden else 'normal'
+        self.ids = {}
+    def setPosition(self, x, y):
+        self.x = x
+        self.y = y
+    def screenCoords(self, screen):
+        return screen.fromWorld(self.x, self.y)
+    def getId(self, screen):
+        canvasId = screen.canvasId()
+        if (canvasId not in self.ids):
+            return None
+        return self.ids[canvasId]
+    def render(self, screen, isDragging=False):
+        canvasId = screen.canvasId()
+        if (canvasId not in self.ids):
+            self.ids[canvasId] = screen.createPin(
+                self.colour, self.outline, self.x, self.y
+            )
+            return
+        screen.movePinTo(
+            id=self.ids[canvasId],
+            x=self.x, y=self.y,
+            dragging=isDragging
+        )
+    def getName(self):
+        return ""
+    def renderCsvLine(self, image, **kwargs):
+        scale = image.pixelSize()
+        sx = self.x * scale
+        sy = self.y * scale
+        z = image.czi.surfaceZ(sx, sy)
+        print("{0},{1},{2},{3},{4}".format(
+            self.CHARACTER,
+            sx, sy, z,
+            self.getName()
+        ), **kwargs)
+    def hide(self, *screens):
+        for screen in screens:
+            screen.hidePin(self.getId(screen))
+    def show(self, *screens):
+        for screen in screens:
+            screen.showPin(self.getId(screen))
+    def removeFrom(self, *screens):
+        for screen in screens:
+            screen.deletePin(self.getId(screen))
+
+class PoiPin(Pin):
+    """ Point of interest still not captured as a Z-stack """
+    def __init__(self, **kwargs):
+        super().__init__('white', **kwargs)
+
+class PodPin(Pin):
+    """ Point of interest that has been captured """
+    def __init__(self, name, **kwargs):
+        super().__init__('grey24', outline='grey64', **kwargs)
+        self.name = name
+    def getName(self):
+        return self.name
+
+class RegPin(Pin):
+    """ Registration point """
+    CHARACTER = 'r'
+    def __init__(self, **kwargs):
+        super().__init__('yellow', **kwargs)
+
+class AxlePin(Pin):
+    """ Rotation axle """
+    def __init__(self, **kwargs):
+        super().__init__('red', outline='white', **kwargs)
+    def renderCsvLine(self, image, **kwargs):
+        pass
+
+def getOverlappingElement(es, screen, x, y):
+    ps = frozenset(screen.overlappingIds(x,y))
+    for e in es:
+        if e.getId(screen) in ps:
+            return e
+    return None
+
+class PinSet:
+    def __init__(self):
+        self.pois = set([])
+        self.pods = set([])
+        self.regs = set([])
+        self.axle = None
+        self.unknownPois = []
+        self.removed = []
+        self._changed = False
+    def changed(self):
+        return self._changed
+    def addPoi(self, p):
+        self.pois.add(p)
+        self._changed = True
+    def createPoiPin(self, **kwargs):
+        self.addPoi(PoiPin(**kwargs))
+    def addPod(self, p):
+        self.pods.add(p)
+        self._changed = True
+    def createPodPin(self, name, **kwargs):
+        self.addPod(PodPin(name, **kwargs))
+    def addReg(self, p):
+        self.regs.add(p)
+        self._changed = True
+    def createRegPin(self, **kwargs):
+        self.addPoi(RegPin(**kwargs))
+    def setAxle(self, p):
+        self.removeAxle()
+        self.axle = p
+    def setAxlePosition(self, x, y):
+        if self.axle is None:
+            self.axle = AxlePin()
+        self.axle.setPosition(x, y)
+    def removeAxle(self):
+        if self.axle is not None:
+            self.axle.destroy()
+            self.axle = None
+    def remove(self, p):
+        for ps in [self.pois, self.pods, self.regs]:
+            if p in ps:
+                ps.remove(p)
+                p.destroy()
+                return
+        if p == self.axle:
+            self.axle = None
+        p.destroy()
+        self._changed = True
+    def hideAxle(self, *screens):
+        if self.axle:
+            self.axle.hide(*screens)
+    def showAxle(self, *screens):
+        if self.axle:
+            self.axle.show(*screens)
+    def load(self, image, fh):
+        csv = CsvLoader(fh)
+        if not csv.headersAre('type,x,y,z,name'):
+            raise Exception('Could not understand csv file')
+        self.pois = set([])
+        self.pods = set([])
+        self.regs = set([])
+        self.unknownPois = []
+        scale = image.pixelSize()
+        for (t,tx,ty,z,name) in csv.generateRows():
+            x = float(tx) / scale
+            y = float(ty) / scale
+            pin = None
+            if t == 'i':
+                if len(name) == 0:
+                    pin = self.createPoiPin(x=x, y=y)
+                else:
+                    pin = self.createPodPin(name, x=x, y=y)
+            elif t == 'r':
+                pin = self.createRegPin(x=x, y=y)
+            else:
+                self.unknownPois.append((t,x,y,z,name))
+        self._changed = False
+    def save(self, image, **kwargs):
+        print('type,x,y,z,name', **kwargs)
+        for (t,x,y,z,name) in self.unknownPois:
+            print('{0},{1},{2},{3},{4}'.format(t,x,y,z,name), **kwargs)
+        scale = image.pixelSize()
+        for (k, pins) in [ ('r', self.regs), ('i', self.pods), ('i', self.pois) ]:
+            for pin in pins:
+                sx = pin.x * scale
+                sy = pin.y * scale
+                z = image.czi.surfaceZ(sx, sy)
+                print(
+                    "{0},{1},{2},{3},{4}".format(k, sx, sy, z, pin.getName()),
+                    **kwargs
+                )
+        self._changed = False
+    def allPins(self):
+        maybe_axle = [] if self.axle is None else [self.axle]
+        return itertools.chain(self.pois, self.pods, self.regs, maybe_axle)
+    def renderOn(self, screen, draggingPin=None):
+        for p in self.allPins():
+            p.render(screen, p == draggingPin)
+    def isAxlePin(self, screen, x, y):
+        if self.axle is None:
+            return False
+        return self.axle.getId(screen) in screen.overlappingIds(x, y)
+    def getPoiPin(self, screen, x, y):
+        return getOverlappingElement(self.pois, screen, x, y)
+    def getPodPin(self, screen, x, y):
+        return getOverlappingElement(self.pods, screen, x, y)
+    def getRegPin(self, screen, x, y):
+        return getOverlappingElement(self.regs, screen, x, y)
+    def deletePin(self, pin, screens):
+        if pin in self.pois:
+            self.pois.remove(pin)
+        elif pin in self.regs:
+            self.regs.remove(pin)
+        elif pin == self.axle:
+            self.axle = None
+        elif pin in self.pods:
+            self.pods.remove(pin)
+        pin.removeFrom(*screens)
+        self._changed = True
 
 class ManimalApplication(tk.Frame):
     def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
@@ -728,6 +982,7 @@ class ManimalApplication(tk.Frame):
         self.canvas = tk.Canvas(self)
         self.canvas.grid(column=0, columnspan=columnCount, row=0, sticky='nsew')
         self.screen = Screen(self.canvas)
+        self.screens = [self.screen]
         self.mode = tk.IntVar(value=0)
         self.mouseFunctionMove = 'move'
         self.mouseFunctionAddPoi = 'add POI'
@@ -765,14 +1020,10 @@ class ManimalApplication(tk.Frame):
         else:
             flip = False
         xflip = -1 if flip else 1
-        self.axlePin = None
-        self.regPins = set([])
-        self.poiPins = set([])
-        self.podPins = set([])
+        self.pins = PinSet()
         self.pinCoords = {}
         self.pinNames = {}
         self.draggingPin = None
-        self.unknownPois = []
         self.pinButton = None
         self.sliding = None
         if sliding:
@@ -886,7 +1137,6 @@ class ManimalApplication(tk.Frame):
         self.updateCache()
         self.updateCanvas()
         self.loadPoisIfAvailable(self.poi_file)
-        self.axlePin = self.createPin('green', outline='white', hidden=True)
         self.tick()
 
     def updateCache(self):
@@ -918,7 +1168,7 @@ class ManimalApplication(tk.Frame):
             return
         c = self.pinButton.config
         c(relief='raised')
-        self.canvas.itemconfigure(self.axlePin, state='hidden')
+        self.pins.hideAxle(*self.screens)
         self.sliding.unsetPin()
 
     def toggleAxlePin(self):
@@ -927,7 +1177,7 @@ class ManimalApplication(tk.Frame):
         c = self.pinButton.config
         if c('relief')[-1] == 'raised':
             c(relief='sunken')
-            self.canvas.itemconfigure(self.axlePin, state='normal')
+            self.pins.showAxle(*self.screens)
         else:
             self.removeAxlePin()
 
@@ -942,19 +1192,8 @@ class ManimalApplication(tk.Frame):
             self.updateCanvas()
 
     def savePois(self, **kwargs):
-        print('type,x,y,z,name', **kwargs)
-        for (t,x,y,z,name) in self.unknownPois:
-            print('{0},{1},{2},{3},{4}'.format(t,x,y,z,name), **kwargs)
         image = self.fixed or self.sliding
-        scale = image.pixelSize()
-        for (k, ids) in [ ('r', self.regPins), ('i', self.podPins), ('i', self.poiPins) ]:
-            for id in ids:
-                (x,y) = self.pinCoords[id]
-                sx = x * scale
-                sy = y * scale
-                z = image.czi.surfaceZ(sx, sy)
-                name = id in self.pinNames and self.pinNames[id] or ''
-                print("{0},{1},{2},{3},{4}".format(k, sx, sy, z, name), **kwargs)
+        self.pins.save(image=image, **kwargs)
 
     def saveMatrix(self, **kwargs):
         print('x,y,t', **kwargs)
@@ -978,7 +1217,7 @@ class ManimalApplication(tk.Frame):
         super().quit()
 
     def maybeQuit(self):
-        if self.changed:
+        if self.changed or self.pins.changed():
             self.wait_window(SaveDialog(self, self.save, self.quit))
         else:
             self.quit()
@@ -992,25 +1231,8 @@ class ManimalApplication(tk.Frame):
         return pixelSize
 
     def loadPois(self, fh):
-        csv = CsvLoader(fh)
-        if not csv.headersAre('type,x,y,z,name'):
-            raise Exception('Could not understand csv file')
-        self.unknownPois = []
-        scale = self.pixelSize()
-        for (t,x,y,z,name) in csv.generateRows():
-            pin = None
-            if t == 'i':
-                if len(name) == 0:
-                    pin = self.createPoiPin()
-                else:
-                    pin = self.createPodPin()
-                    self.pinNames[pin] = name
-            elif t == 'r':
-                pin = self.createRegPin()
-            else:
-                self.unknownPois.append((t,x,y,z,name))
-            if pin:
-                self.pinCoords[pin] = (float(x) / scale,float(y) / scale)
+        image = self.fixed if self.fixed else self.sliding
+        self.pins.load(image=image, fh=fh)
 
     def loadPoisIfAvailable(self, fn):
         if fn and os.path.exists(fn):
@@ -1020,37 +1242,20 @@ class ManimalApplication(tk.Frame):
         return False
 
     def isAxlePin(self, x, y):
-        ids = self.canvas.find_overlapping(x, y, x+1, y+1)
-        return self.axlePin in ids
-
-    def pinAt(self, x, y, pins):
-        ids = set(self.canvas.find_overlapping(x, y, x+1, y+1))
-        ps = ids & pins
-        if self.draggingPin in ps:
-            ps.remove(self.draggingPin)
-        if not ps:
-            return None
-        return ps.pop()
+        return self.pins.isAxlePin(self.screen, x, y)
 
     def regPinAt(self, x, y):
-        return self.pinAt(x, y, self.regPins)
+        return self.pins.getRegPin(self.screen, x, y)
 
     def poiPinAt(self, x, y):
-        return self.pinAt(x, y, self.poiPins)
+        return self.pins.getPoiPin(self.screen, x, y)
 
     def deleteDraggingPin(self):
         p = self.draggingPin
         if p == None:
             return
         self.draggingPin = None
-        if p in self.regPins:
-            self.regPins.remove(p)
-            self.changed = True
-        elif p in self.poiPins:
-            self.poiPins.remove(p)
-            self.changed = True
-        elif p == self.axlePin:
-            self.removeAxlePin()
+        self.pins.deletePin(p, self.screens)
 
     def zoomChange(self, delta, x, y):
         scaleIndex = findNoGreaterThan(self.screen.scale, self.zoomLevels)
@@ -1068,16 +1273,14 @@ class ManimalApplication(tk.Frame):
         pass
 
     def dragStartAddPoi(self, x, y):
-        p = self.createPoiPin()
-        self.pinCoords[p] = self.screen.toWorld(x, y)
+        (wx, wy) = self.screen.toWorld(x, y)
+        self.pins.createPoiPin(x=wx, y=wy)
         self.updateCanvas()
-        self.changed = True
 
     def dragStartAddRegPoint(self, x, y):
-        p = self.createRegPin()
-        self.pinCoords[p] = self.screen.toWorld(x, y)
+        (wx, wy) = self.screen.toWorld(x, y)
+        self.pins.createRegPin(x=wx, y=wy)
         self.updateCanvas()
-        self.changed = True
 
     def dragStartSlide(self, x, y):
         self.sliding.dragStart(self.screen, x, y)
@@ -1093,29 +1296,22 @@ class ManimalApplication(tk.Frame):
 
     def dragStart(self, x, y, funcName):
         self.screen.dragStart(x, y)
-        p = self.regPinAt(x, y)
+        p = self.pins.getRegPin(self.screen, x, y)
         if not p:
-            p = self.poiPinAt(x, y)
-        if not p and self.isAxlePin(x, y):
-            p = self.axlePin
+            p = self.pins.getPoiPin(self.screen, x, y)
+        if not p and self.pins.isAxlePin(self.screen, x, y):
+            p = self.pins.axle
             self.sliding.dragStart(self.screen, x, y, draggingPin=True)
         if p:
             # clicked a pin; make it the dragging pin
             self.deleteDraggingPin()
             self.draggingPin = p
-        elif self.draggingPin == None:
+        elif self.draggingPin is None:
             # Not clicked a pin, so do whatever is selected for this button
             return self.mouseDownFunction[funcName](x, y)
         if not self.draggingPin:
             return
-        ps = self.canvas.coords(self.draggingPin)
-        px = ps[0]
-        py = ps[1]
-        for i in range(2, len(ps) // 2):
-            py0 = ps[i*2+1]
-            if py < py0:
-                px = ps[i*2]
-                py = py0
+        (px, py) = self.draggingPin.screenCoords(self.screen)
         self.draggingPinOffsetX = px - x
         self.draggingPinOffsetY = py - y
         self.updateCanvas()
@@ -1124,62 +1320,33 @@ class ManimalApplication(tk.Frame):
         if self.draggingPin:
             if x < 0 or y < 0 or self.screen.width() < x or self.screen.height() < y:
                 self.deleteDraggingPin()
-            elif self.draggingPin == self.axlePin:
+            elif self.draggingPin == self.pins.axle:
                 self.sliding.setPinIfUnset(self.screen, x, y)
             else:
-                self.pinCoords[self.draggingPin] = self.screen.toWorld(
+                (wx, wy) = self.screen.toWorld(
                     self.draggingPinOffsetX + x,
                     self.draggingPinOffsetY + y
                 )
-                self.changed = True
+                self.draggingPin.setPosition(wx, wy)
             self.draggingPin = None
             self.updateCanvas()
     
     def dragMove(self, x, y, funcName):
         if self.draggingPin:
-            if self.draggingPin == self.axlePin:
+            if self.draggingPin == self.pins.axle:
                 self.sliding.dragMove(self.screen, x, y)
             else:
-                self.pinCoords[self.draggingPin] = self.screen.toWorld(
+                (wx, wy) = self.screen.toWorld(
                     self.draggingPinOffsetX + x,
                     self.draggingPinOffsetY + y
                 )
-                self.changed = True
+                self.draggingPin.setPosition(wx, wy)
             self.updateCanvas()
         else:
             self.mouseDragFunction[funcName](x, y)
     
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
-
-    def createPin(self, color, outline='black', hidden=False):
-        state = 'hidden' if hidden else 'normal'
-        return self.canvas.create_polygon((0,0,0,1,1,1),
-            fill=color, joinstyle='miter', outline=outline, state=state)
-
-    def createRegPin(self):
-        """
-        Create registration point pin
-        """
-        pin = self.createPin('yellow')
-        self.regPins.add(pin)
-        return pin
-
-    def createPoiPin(self):
-        """
-        Create point of interest pin
-        """
-        pin = self.createPin('white')
-        self.poiPins.add(pin)
-        return pin
-
-    def createPodPin(self):
-        """
-        Create point of interest (with z-stack already captured) pin
-        """
-        pin = self.createPin('grey24', outline='grey64')
-        self.podPins.add(pin)
-        return pin
 
     def showScaleBar(self):
         pixelSize = self.pixelSize()
@@ -1201,23 +1368,23 @@ class ManimalApplication(tk.Frame):
                 image = Image.blend(image, slider, 0.5)
             else:
                 image = slider
-        for pinId in self.poiPins | self.regPins | self.podPins:
-            (x,y) = self.screen.fromWorld(*self.pinCoords[pinId])
-            if pinId == self.draggingPin:
-                self.canvas.coords(pinId, (x,y,x+5,y-15,x+15,y-5))
-            else:
-                self.canvas.coords(pinId, (x,y,x+5,y-15,x-5,y-15))
+        draggingPin = self.draggingPin
         if pin != None:
             (x,y) = pin
-            self.canvas.coords(self.axlePin, (x,y,x+5,y-15,x+15,y-5))
+            (wx, wy) = self.screen.toWorld(x, y)
+            self.pins.setAxlePosition(wx, wy)
+            draggingPin = self.pins.axle
         elif self.sliding:
             p = self.sliding.pinScreenPosition(self.screen)
             if p:
                 (x,y) = p
-                if self.axlePin == self.draggingPin:
-                    self.canvas.coords(self.axlePin, (x,y,x+5,y-15,x+15,y-5))
-                else:
-                    self.canvas.coords(self.axlePin, (x,y,x-5,y-15,x+5,y-15))
+                (wx, wy) = self.screen.toWorld(
+                    self.draggingPinOffsetX + x,
+                    self.draggingPinOffsetY + y
+                )
+                self.pins.setAxlePosition(wx, wy)
+        for screen in self.screens:
+            self.pins.renderOn(screen, draggingPin)
         self.image = ImageTk.PhotoImage(image)
         self.showScaleBar()
         self.canvas.itemconfigure(self.canvasImage, image=self.image)
@@ -1295,4 +1462,5 @@ app = ManimalApplication(
     root, **kw
 )
 app.master.title("Manimal")
+root.protocol('WM_DELETE_WINDOW', app.maybeQuit)
 app.mainloop()

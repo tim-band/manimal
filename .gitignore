@@ -1,3 +1,6 @@
 *.whl
 requirements.txt
-meta.xml
+/*.xml
+/.vscode
+/*.csv
+/*.jpg
