@@ -233,12 +233,19 @@ class Screen:
         self.canvas = canvas
 
     def setScale(self, scale):
+        """
+        Sets `scale` as the real-world unit size of a pixel
+        """
         self.scale = scale
 
     def getScale(self):
         return self.scale
 
     def setTranslation(self, x, y):
+        """
+        Sets (x,y) (in real world co-ordinates) to be the
+        centre of the screen
+        """
         self.panX = x
         self.panY = y
 
@@ -285,9 +292,11 @@ class Screen:
         self.panY += ds * my
 
     def createPin(self, fill, outline, x=0, y=0):
-        return self.canvas.create_polygon(self.getPinShape(x, y),
+        id = self.canvas.create_polygon(self.getPinShape(x, y),
             fill=fill, joinstyle='miter', outline=outline, state='normal'
         )
+        self.setPinColours(id, fill, outline)
+        return id
 
     def deletePin(self, id):
         if id is not None:
@@ -321,16 +330,20 @@ class Screen:
         """
         return self.canvas.find_overlapping(x, y, x+1, y+1)
 
-    def canvasId(self):
+    def screenId(self):
         return self.canvas.winfo_id()
 
 
 class OverviewScreen(Screen):
-    def getPinShape(self, x, y):
+    def __init__(self, **kwargs):
+        self.realX = None
+        self.canvasX = None
+        self.centreX = None
+        super().__init__(**kwargs)
+    def getPinShape(self, x, y, dragging=False):
         return self.fromWorld(x, y)
     def setPinColours(self, id, fill, outline):
         self.canvas.itemconfigure(id, fill=fill, outline=fill)
-
 
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
@@ -381,6 +394,18 @@ class ZoomableImage:
             bbox.x + bbox.w // 2,
             bbox.y + bbox.h // 2
         )
+
+    def left(self):
+        return self.czi.getBbox().x
+
+    def top(self):
+        return self.czi.getBbox().y
+
+    def width(self):
+        return self.czi.getBbox().w
+
+    def height(self):
+        return self.czi.getBbox().h
 
     def toWorld(self, x, y):
         s = math.sin(self.angle)
@@ -767,19 +792,19 @@ class Pin:
     def screenCoords(self, screen):
         return screen.fromWorld(self.x, self.y)
     def getId(self, screen):
-        canvasId = screen.canvasId()
-        if (canvasId not in self.ids):
+        screenId = screen.screenId()
+        if (screenId not in self.ids):
             return None
-        return self.ids[canvasId]
+        return self.ids[screenId]
     def render(self, screen, isDragging=False):
-        canvasId = screen.canvasId()
-        if (canvasId not in self.ids):
-            self.ids[canvasId] = screen.createPin(
+        screenId = screen.screenId()
+        if (screenId not in self.ids):
+            self.ids[screenId] = screen.createPin(
                 self.colour, self.outline, self.x, self.y
             )
             return
         screen.movePinTo(
-            id=self.ids[canvasId],
+            id=self.ids[screenId],
             x=self.x, y=self.y,
             dragging=isDragging
         )
@@ -982,6 +1007,7 @@ class ManimalApplication(tk.Frame):
         self.canvas = tk.Canvas(self)
         self.canvas.grid(column=0, columnspan=columnCount, row=0, sticky='nsew')
         self.screen = Screen(self.canvas)
+        self.overview = None
         self.screens = [self.screen]
         self.mode = tk.IntVar(value=0)
         self.mouseFunctionMove = 'move'
@@ -1005,6 +1031,7 @@ class ManimalApplication(tk.Frame):
             functions += [self.mouseFunctionAddPoi, self.mouseFunctionAddRegPoint]
         self.poi_file = poi_file
         self.fixed = None
+        self.overviewSliderId = None
         if fixed:
             self.fixed = ZoomableImage(
                 pathlib.Path(fixed),
@@ -1012,6 +1039,29 @@ class ManimalApplication(tk.Frame):
             )
             centreFixed = self.fixed.centre()
             self.screen.setTranslation(centreFixed[0], centreFixed[1])
+            self.overviewCanvas = tk.Canvas(self, bg='#001')
+            self.overviewCanvas.grid(
+                column=0, columnspan=columnCount, row=0, sticky='nsew'
+            )
+            self.overview = OverviewScreen(canvas=self.overviewCanvas)
+            self.overviewWidth = 150
+            self.overviewHeight = 150
+            self.canvas.create_window(
+                0, 0, anchor='nw',
+                width=self.overviewWidth,
+                height=self.overviewHeight,
+                window=self.overviewCanvas
+            )
+            self.screens.append(self.overview)
+            self.overview.setTranslation(centreFixed[0], centreFixed[1])
+            self.overview.setScale(1.05 * max(
+                self.fixed.width() / self.overviewWidth,
+                self.fixed.height() / self.overviewHeight
+            ))
+            if sliding:
+                self.overviewSliderId = self.overviewCanvas.create_polygon(
+                    (0,0), fill='#445'
+                )
         self.matrix_file = matrix_file
         if flip == 'auto':
             flip = bool(fixed)
@@ -1359,6 +1409,19 @@ class ManimalApplication(tk.Frame):
 
     def updateCanvas(self, pin=None):
         self.updateCache()
+        if self.overviewSliderId is not None:
+            l = self.sliding.left()
+            r = l + self.sliding.width()
+            t = self.sliding.top()
+            b = t + self.sliding.height()
+            coords = [
+                self.sliding.toScreen(self.overview, *c)
+                for c in [(l, t), (r, t), (r, b), (l, b)]
+            ]
+            self.overviewCanvas.coords(
+                self.overviewSliderId,
+                list(itertools.chain(*coords))
+            )
         image = None
         if self.fixed:
             image = self.fixed.transformImage(self.screen)
