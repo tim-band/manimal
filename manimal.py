@@ -250,10 +250,24 @@ class Screen:
         self.panY = y
 
     def width(self):
+        """ Returns the screen width in pixels """
         return self.canvas.winfo_width()
 
     def height(self):
+        """ Returns the screen height in pixels """
         return self.canvas.winfo_height()
+
+    def widthWorld(self):
+        return self.width() * self.scale
+
+    def heightWorld(self):
+        return self.height() * self.scale
+
+    def centreWorld(self):
+        """
+        Returns the real-world co-ordinates this screen is centred on
+        """
+        return (self.panX, self.panY)
 
     def toWorld(self, x, y):
         x -= self.width() / 2
@@ -1043,6 +1057,9 @@ class ManimalApplication(tk.Frame):
             self.overviewCanvas.grid(
                 column=0, columnspan=columnCount, row=0, sticky='nsew'
             )
+            self.overviewCanvas.create_polygon(
+                (0, 0), tags=['view'], fill='#222', outline='#888'
+            )
             self.overview = OverviewScreen(canvas=self.overviewCanvas)
             self.overviewWidth = 150
             self.overviewHeight = 150
@@ -1151,6 +1168,7 @@ class ManimalApplication(tk.Frame):
         self.grid_columnconfigure(rightClickColumn+1, weight=clickColumnWeight)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
+        self.screen.setScale(self.zoomLevels[0])
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
         self.canvas.bind("<Button-1>", lambda e: self.dragStart(
@@ -1407,8 +1425,7 @@ class ManimalApplication(tk.Frame):
         maxMicrons = pixelSize * scaleBarWidth
         self.scaleBar.show(scaleBarWidth, maxMicrons)
 
-    def updateCanvas(self, pin=None):
-        self.updateCache()
+    def updateOverviewCanvas(self):
         if self.overviewSliderId is not None:
             l = self.sliding.left()
             r = l + self.sliding.width()
@@ -1422,6 +1439,18 @@ class ManimalApplication(tk.Frame):
                 self.overviewSliderId,
                 list(itertools.chain(*coords))
             )
+        (x, y) = self.screen.centreWorld()
+        w2 = self.screen.widthWorld() / 2
+        h2 = self.screen.heightWorld() / 2
+        (lo, to) = self.overview.fromWorld(x - w2, y - h2)
+        (ro, bo) = self.overview.fromWorld(x + w2, y + h2)
+        self.overviewCanvas.coords('view', [
+            lo, to, ro, to, ro, bo, lo, bo
+        ])
+
+    def updateCanvas(self, pin=None):
+        self.updateCache()
+        self.updateOverviewCanvas()
         image = None
         if self.fixed:
             image = self.fixed.transformImage(self.screen)
