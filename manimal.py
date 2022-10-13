@@ -8,6 +8,7 @@ import os
 import pathlib
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageTk
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -231,10 +232,22 @@ class Screen:
         self.panY = 0
         self.scale = 1.0
         self.canvas = canvas
+        self.halfMagWidth = None
+        self.halfMagHeight = None
+
+    def setMagnifiedScreenSize(self, width, height):
+        """
+        Sets the size of the dotted box that will appear when
+        dragging POI pins around, in world pixels. This can be
+        used to show how big the magnified images will be.
+        """
+        self.halfMagWidth = width / 2
+        self.halfMagHeight = height / 2
 
     def setScale(self, scale):
         """
-        Sets `scale` as the real-world unit size of a pixel
+        Sets `scale` as the world unit size of a pixel.
+        The "world" scale is usually pixels on the fixed image.
         """
         self.scale = scale
 
@@ -243,18 +256,18 @@ class Screen:
 
     def setTranslation(self, x, y):
         """
-        Sets (x,y) (in real world co-ordinates) to be the
+        Sets (x,y) (in world co-ordinates) to be the
         centre of the screen
         """
         self.panX = x
         self.panY = y
 
     def width(self):
-        """ Returns the screen width in pixels """
+        """ Returns the screen width in screen pixels """
         return self.canvas.winfo_width()
 
     def height(self):
-        """ Returns the screen height in pixels """
+        """ Returns the screen height in screen pixels """
         return self.canvas.winfo_height()
 
     def widthWorld(self):
@@ -305,11 +318,13 @@ class Screen:
         self.panX += ds * mx
         self.panY += ds * my
 
-    def createPin(self, fill, outline, x=0, y=0):
-        id = self.canvas.create_polygon(self.getPinShape(x, y),
-            fill=fill, joinstyle='miter', outline=outline, state='normal'
+    def createPin(self, x=0, y=0, tag=None):
+        id = self.canvas.create_polygon(
+            (0,0), joinstyle='miter',
+            state='normal', tags=[tag] if tag else []
         )
-        self.setPinColours(id, fill, outline)
+        self.setPinShape(id, x, y, tag)
+        self.setPinColours(id, tag)
         return id
 
     def deletePin(self, id):
@@ -324,19 +339,38 @@ class Screen:
         if id is not None:
             self.canvas.itemconfigure(id, state='normal')
 
-    def setPinColours(self, id, fill, outline):
-        self.canvas.itemconfigure(id, fill=fill, outline=outline)
+    def setPinColours(self, id, tag):
+        if tag == 'reg':
+            self.canvas.itemconfigure(id, fill='yellow', outline='black')
+        elif tag == 'pod':
+            self.canvas.itemconfigure(id, fill='grey24', outline='grey64')
+        elif tag == 'axle':
+            self.canvas.itemconfigure(id, fill='red', outline='white')
+        else:
+            self.canvas.itemconfigure(id, fill='white', outline='black')
 
     def movePinTo(self, id, x, y, dragging):
-        self.canvas.coords(id, self.getPinShape(x, y, dragging))
+        tags = self.canvas.gettags(id)
+        tag = tags[0] if len(tags) != 0 else None
+        self.setPinShape(id, x, y, tag, dragging)
 
-    def getPinShape(self, x, y, dragging=False):
+    def setPinShape(self, id, x, y, tag, dragging=False):
         (x, y) = self.fromWorld(x, y)
-        return (
-            x, y, x+5, y-15, x+15, y-5
-        ) if dragging else (
-            x, y, x+5, y-15, x-5, y-15
-        )
+        if dragging:
+            if tag == 'poi':
+                if self.halfMagWidth is not None:
+                    w = self.halfMagWidth / self.scale
+                    h = self.halfMagHeight / self.scale
+                    self.canvas.itemconfigure(id, dash='.', fill='', outline='white')
+                    self.canvas.coords(id, (
+                        x-w, y-h, x+w, y-h, x+w, y+h, x-w, y+h
+                    ))
+                    return
+            self.canvas.coords(id, (x, y, x+5, y-15, x+15, y-5))
+        else:
+            if tag == 'poi':
+                self.canvas.itemconfigure(id, dash='', fill='white', outline='black')
+            self.canvas.coords(id, (x, y, x+5, y-15, x-5, y-15))
 
     def overlappingIds(self, x, y):
         """
@@ -354,10 +388,21 @@ class OverviewScreen(Screen):
         self.canvasX = None
         self.centreX = None
         super().__init__(**kwargs)
-    def getPinShape(self, x, y, dragging=False):
-        return self.fromWorld(x, y)
-    def setPinColours(self, id, fill, outline):
-        self.canvas.itemconfigure(id, fill=fill, outline=fill)
+    def setPinShape(self, id, x, y, tag, dragging=False):
+        (x, y) = self.fromWorld(x, y)
+        if tag == 'reg':
+            self.canvas.coords(id, (x-1, y-1, x+2, y-1, x+2, y+2, x-1, y+2))
+        else:
+            self.canvas.coords(id, (x, y, x+1, y, x, y-1))
+    def setPinColours(self, id, tag):
+        if tag == 'reg':
+            self.canvas.itemconfigure(id, outline='yellow')
+        elif tag == 'pod':
+            self.canvas.itemconfigure(id, outline='grey24')
+        elif tag == 'axle':
+            self.canvas.itemconfigure(id, outline='red')
+        else:
+            self.canvas.itemconfigure(id, outline='white')
 
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
@@ -792,12 +837,11 @@ class SaveDialog(tk.Toplevel):
 
 class Pin:
     CHARACTER = 'i'
-    def __init__(self, colour, outline='black', x=0, y=0, hidden=False):
+    TAG = 'pin'
+    def __init__(self, x=0, y=0, hidden=False):
         """ (x, y) is the position in pixels """
         self.x = x
         self.y = y
-        self.colour = colour
-        self.outline = outline
         self.state = 'hidden' if hidden else 'normal'
         self.ids = {}
     def setPosition(self, x, y):
@@ -814,7 +858,7 @@ class Pin:
         screenId = screen.screenId()
         if (screenId not in self.ids):
             self.ids[screenId] = screen.createPin(
-                self.colour, self.outline, self.x, self.y
+                self.x, self.y, self.TAG
             )
             return
         screen.movePinTo(
@@ -845,28 +889,32 @@ class Pin:
             screen.deletePin(self.getId(screen))
 
 class PoiPin(Pin):
+    TAG = 'poi'
     """ Point of interest still not captured as a Z-stack """
     def __init__(self, **kwargs):
-        super().__init__('white', **kwargs)
+        super().__init__(**kwargs)
 
 class PodPin(Pin):
+    TAG = 'pod'
     """ Point of interest that has been captured """
     def __init__(self, name, **kwargs):
-        super().__init__('grey24', outline='grey64', **kwargs)
+        super().__init__(**kwargs)
         self.name = name
     def getName(self):
         return self.name
 
 class RegPin(Pin):
+    TAG = 'reg'
     """ Registration point """
     CHARACTER = 'r'
     def __init__(self, **kwargs):
-        super().__init__('yellow', **kwargs)
+        super().__init__(**kwargs)
 
 class AxlePin(Pin):
+    TAG = 'axle'
     """ Rotation axle """
     def __init__(self, **kwargs):
-        super().__init__('red', outline='white', **kwargs)
+        super().__init__(**kwargs)
     def renderCsvLine(self, image, **kwargs):
         pass
 
@@ -888,6 +936,8 @@ class PinSet:
         self._changed = False
     def changed(self):
         return self._changed
+    def setChanged(self):
+        self._changed = True
     def addPoi(self, p):
         self.pois.add(p)
         self._changed = True
@@ -902,7 +952,7 @@ class PinSet:
         self.regs.add(p)
         self._changed = True
     def createRegPin(self, **kwargs):
-        self.addPoi(RegPin(**kwargs))
+        self.addReg(RegPin(**kwargs))
     def setAxle(self, p):
         self.removeAxle()
         self.axle = p
@@ -997,7 +1047,17 @@ class PinSet:
         self._changed = True
 
 class ManimalApplication(tk.Frame):
-    def __init__(self, master, fixed=None, sliding=None, matrix_file=None, poi_file=None, fixed_brightness=2.0, flip='auto'):
+    def __init__(
+        self,
+        master,
+        fixed=None,
+        sliding=None,
+        matrix_file=None,
+        poi_file=None,
+        fixed_brightness=2.0,
+        flip='auto',
+        mag_size=None
+    ):
         super().__init__(master)
         saveColumn = 0
         fixedBrightnessColumn = 1
@@ -1075,6 +1135,15 @@ class ManimalApplication(tk.Frame):
                 self.fixed.width() / self.overviewWidth,
                 self.fixed.height() / self.overviewHeight
             ))
+            pix = self.fixed.pixelSize()
+            if mag_size is not None:
+                m = re.match(r"^(\d+)\s*(?:[x,]\s*(\d+))?$", mag_size)
+                if m:
+                    w = int(m.group(1))
+                    h = int(m.group(2))
+                    if h is None:
+                        h = w
+                    self.screen.setMagnifiedScreenSize(w / pix, h / pix)
             if sliding:
                 self.overviewSliderId = self.overviewCanvas.create_polygon(
                     (0,0), fill='#445'
@@ -1396,6 +1465,7 @@ class ManimalApplication(tk.Frame):
                     self.draggingPinOffsetY + y
                 )
                 self.draggingPin.setPosition(wx, wy)
+                self.pins.setChanged()
             self.draggingPin = None
             self.updateCanvas()
     
@@ -1532,11 +1602,17 @@ parser.add_argument(
     choices=['no', 'yes', 'auto'],
     default='auto'
 )
+parser.add_argument(
+    '--magsize',
+    help='size of the images to be captured in micrometers e.g. 250x200',
+    dest='mag_size',
+    required=False
+)
 options = parser.parse_args()
 
 kw = {
 }
-for attr in ['poi_file', 'sliding', 'matrix_file', 'fixed_brightness', 'fixed', 'flip']:
+for attr in ['poi_file', 'sliding', 'matrix_file', 'fixed_brightness', 'fixed', 'flip', 'mag_size']:
     v = getattr(options, attr, None)
     if v != None:
         kw[attr] = v
