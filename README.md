@@ -78,9 +78,20 @@ the image to its final position is written into the file given by the
 # Building the wheel
 
 ```sh
-pipenv lock -r > requirements.txt
-pip wheel . -r requirements.txt
+python -m pipenv requirements > requirements.txt
+python -m pip wheel . -r requirements.txt
 ```
+
+(or skip the `python -m` if you are in a pipenv shell)
+
+Suppose, for some reason, you wanted to install Manimal on some Windows
+machine that has no internet connectivity. In this case you would find a
+Windows machine that does have internet connectivity, build the wheels
+as above, copy the `.whl` files produced by the lines above onto the
+target machine, then install them with `python -m pip install <.whl>`
+where `<.whl>` is the wheel file you want to install. The order of
+installation is important; one that works is `numpy`, `Pillow`,
+`aicspylibczi`, then finally you can install `manimal`.
 
 # The mathematics
 
