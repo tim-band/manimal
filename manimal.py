@@ -823,6 +823,10 @@ class SaveDialog(tk.Toplevel):
         cancel = tk.Button(self, text='Cancel', command=self.cancel)
         cancel.grid(row=1, column=2)
         self.grid()
+        self.bind('<Escape>', lambda e: self.cancel())
+        self.bind('<Return>', lambda e: self.save())
+        self.bind('s', lambda e: self.save())
+        self.bind('d', lambda e: self.dont())
     def destroy(self):
         super().destroy()
     def save(self, event=None):
@@ -980,6 +984,12 @@ class PinSet:
     def showAxle(self, *screens):
         if self.axle:
             self.axle.show(*screens)
+    def poiCount(self):
+        return len(self.pois)
+    def podCount(self):
+        return len(self.pods)
+    def regCount(self):
+        return len(self.regs)
     def load(self, image, fh):
         csv = CsvLoader(fh)
         if not csv.headersAre('type,x,y,z,name'):
@@ -1059,27 +1069,23 @@ class ManimalApplication(tk.Frame):
         mag_size=None
     ):
         super().__init__(master)
-        saveColumn = 0
-        fixedBrightnessColumn = 1
-        slidingBrightnessColumn = 3
-        pinButtonColumn = 5
-        leftClickColumn = 6
-        rightClickColumn = 8
-        closeColumn = 11
-        columnCount = 12
-        labelWeight = 10
-        clickColumnWeight = 6
         self.changed = False
         self.grid(row=0, column=0, sticky='nsew')
-        self.saveButton = tk.Button(self, text='Save', command = self.save)
-        self.saveButton.grid(column=saveColumn, row=1, sticky='s')
-        master.bind('<Return>', lambda e: self.saveAndQuit())
+        self.grid_columnconfigure(0, weight=1)
+        self.controls1 = tk.Canvas(self)
+        self.controls1.grid(column=0, row=1, sticky='nsew')
+        self.controls2 = tk.Canvas(self)
+        self.controls2.grid(column=0, row=2, sticky='nsew')
+        self.counter = tk.Label(self.controls1)
+        self.counter.pack(side='right')
+        self.saveButton = tk.Button(self.controls2, text='Save', command = self.save)
+        self.saveButton.pack(side='right')
         master.bind('s', lambda e: self.save())
-        self.closeButton = tk.Button(self, text='Close', command = self.maybeQuit)
-        self.closeButton.grid(column=closeColumn, row=1, sticky='s')
+        self.closeButton = tk.Button(self.controls2, text='Close', command = self.maybeQuit)
+        self.closeButton.pack(side='right')
         master.bind('<Escape>', lambda e: self.maybeQuit())
         self.canvas = tk.Canvas(self)
-        self.canvas.grid(column=0, columnspan=columnCount, row=0, sticky='nsew')
+        self.canvas.grid(column=0, row=0, sticky='nsew')
         self.screen = Screen(self.canvas)
         self.overview = None
         self.screens = [self.screen]
@@ -1115,7 +1121,7 @@ class ManimalApplication(tk.Frame):
             self.screen.setTranslation(centreFixed[0], centreFixed[1])
             self.overviewCanvas = tk.Canvas(self, bg='#001')
             self.overviewCanvas.grid(
-                column=0, columnspan=columnCount, row=0, sticky='nsew'
+                column=0, row=0, sticky='nsew'
             )
             self.overviewCanvas.create_polygon(
                 (0, 0), tags=['view'], fill='#222', outline='#888'
@@ -1167,13 +1173,12 @@ class ManimalApplication(tk.Frame):
                 self.mouseFunctionSlide
             )
             self.pinButton = tk.Button(
-                self,
+                self.controls1,
                 text='Pin',
                 relief='raised',
                 command=self.toggleAxlePin
             )
-            self.pinButton.grid(column=pinButtonColumn, row=1, sticky='s')
-            self.grid_columnconfigure(pinButtonColumn, weight=1)
+            self.pinButton.pack(side='left')
             master.bind('p', lambda e: self.toggleAxlePin())
             self.sliding = ZoomableImage(
                 pathlib.Path(sliding), flip=flip
@@ -1187,54 +1192,42 @@ class ManimalApplication(tk.Frame):
             else:
                 self.screen.setTranslation(centreSliding[0], centreSliding[1])
             text = 'brightness (sliding)' if fixed else 'brightness'
-            label = tk.Label(self, text=text)
-            label.grid(column=slidingBrightnessColumn, row=1, sticky='s')
+            label = tk.Label(self.controls1, text=text)
+            label.pack(side='left')
             self.slidingBrightnessSlider = tk.Scale(
-                self,
+                self.controls1,
                 length=100, from_=-6, to=24, resolution=1,
                 orient='horizontal',
                 showvalue=False,
                 command=self.setSlidingBrightness
             )
             self.slidingBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
-            self.slidingBrightnessSlider.grid(column=slidingBrightnessColumn + 1, row=1, sticky='s')
-            self.grid_columnconfigure(slidingBrightnessColumn, weight=labelWeight)
-            self.grid_columnconfigure(slidingBrightnessColumn + 1, weight=1)
+            self.slidingBrightnessSlider.pack(side='left')
         if fixed:
             text = 'brightness (fixed)' if sliding else 'brightness'
-            label = tk.Label(self, text=text)
-            label.grid(column=fixedBrightnessColumn, row=1, sticky='s')
+            label = tk.Label(self.controls1, text=text)
+            label.pack(side='left')
             self.fixedBrightnessSlider = tk.Scale(
-                self,
+                self.controls1,
                 length=100, from_=-6, to=24, resolution=1,
                 orient='horizontal',
                 showvalue=False,
                 command=self.setFixedBrightness
             )
             self.fixedBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
-            self.fixedBrightnessSlider.grid(column=fixedBrightnessColumn + 1, row=1, sticky='s')
-            self.grid_columnconfigure(fixedBrightnessColumn, weight=labelWeight)
-            self.grid_columnconfigure(fixedBrightnessColumn + 1, weight=1)
-        tk.Label(self, text='left mouse button:').grid(
-            column=leftClickColumn, row=1, sticky='se'
-        )
+            self.fixedBrightnessSlider.pack(side='left')
+        tk.Label(self.controls2, text='left mouse button:').pack(side='left')
         self.leftClickFunctionSelector = ttk.Combobox(
-            self, values=functions, state='readonly'
+            self.controls2, values=functions, state='readonly'
         )
-        self.leftClickFunctionSelector.grid(column=leftClickColumn+1, row=1, sticky='sw')
+        self.leftClickFunctionSelector.pack(side='left')
         self.leftClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(leftClickColumn, weight=labelWeight)
-        self.grid_columnconfigure(leftClickColumn+1, weight=clickColumnWeight)
-        tk.Label(self, text='right mouse button:').grid(
-            column=rightClickColumn, row=1, sticky='se'
-        )
+        tk.Label(self.controls2, text='right mouse button:').pack(side='left')
         self.rightClickFunctionSelector = ttk.Combobox(
-            self, values=functions, state='readonly'
+            self.controls2, values=functions, state='readonly'
         )
-        self.rightClickFunctionSelector.grid(column=rightClickColumn+1, row=1, sticky='sw')
+        self.rightClickFunctionSelector.pack(side='left')
         self.rightClickFunctionSelector.set(self.mouseFunctionMove)
-        self.grid_columnconfigure(rightClickColumn, weight=labelWeight)
-        self.grid_columnconfigure(rightClickColumn+1, weight=clickColumnWeight)
         # zoom 100/percent
         self.zoomLevels = [20.0, 10.0, 4.0, 2.0, 1.0, 0.5, 0.25]
         self.screen.setScale(self.zoomLevels[0])
@@ -1273,6 +1266,7 @@ class ManimalApplication(tk.Frame):
         self.update_idletasks()
         self.updateCache()
         self.updateCanvas()
+        self.updateCounter()
         self.loadPoisIfAvailable(self.poi_file)
         self.tick()
 
@@ -1284,12 +1278,20 @@ class ManimalApplication(tk.Frame):
             self.sliding.updateCacheIfNecessary(self.requestQueue, self.screen)
             self.sliding.update()
 
+    def updateCounter(self):
+        self.counter.configure(
+            text='POIs: {0} (+{1} captured), Regs: {2}'.format(
+                self.pins.poiCount(), self.pins.podCount(), self.pins.regCount()
+            )
+        )
+
     def tick(self):
         if self.fixed:
             self.fixed.update()
         if self.sliding:
             self.sliding.update()
         self.updateCanvas()
+        self.updateCounter()
         self.after(1000, self.tick)
 
     def setFixedBrightness(self, brightness):
@@ -1413,11 +1415,13 @@ class ManimalApplication(tk.Frame):
         (wx, wy) = self.screen.toWorld(x, y)
         self.pins.createPoiPin(x=wx, y=wy)
         self.updateCanvas()
+        self.updateCounter()
 
     def dragStartAddRegPoint(self, x, y):
         (wx, wy) = self.screen.toWorld(x, y)
         self.pins.createRegPin(x=wx, y=wy)
         self.updateCanvas()
+        self.updateCounter()
 
     def dragStartSlide(self, x, y):
         self.sliding.dragStart(self.screen, x, y)
@@ -1468,6 +1472,7 @@ class ManimalApplication(tk.Frame):
                 self.pins.setChanged()
             self.draggingPin = None
             self.updateCanvas()
+            self.updateCounter()
     
     def dragMove(self, x, y, funcName):
         if self.draggingPin:
