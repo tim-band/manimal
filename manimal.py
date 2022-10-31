@@ -1011,7 +1011,7 @@ class PinSet:
             elif t == 'r':
                 pin = self.createRegPin(x=x, y=y)
             else:
-                self.unknownPois.append((t,x,y,z,name))
+                self.unknownPois.append((t,tx,ty,z,name))
         self._changed = False
     def save(self, image, **kwargs):
         print('type,x,y,z,name', **kwargs)
