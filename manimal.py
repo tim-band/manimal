@@ -1,6 +1,7 @@
 #! /usr/bin/env python3
 from aicspylibczi import CziFile
 import argparse
+import glob
 import itertools
 import math
 import numpy as np
@@ -406,11 +407,8 @@ class OverviewScreen(Screen):
 
 class ZoomableImage:
     def __init__(self, cziPath, brightness=2.0, flip=False):
-        self.czi = loadImage(pathlib.Path(cziPath))
+        self.load(cziPath)
         self.queue = queue.SimpleQueue()
-        self.pil = None
-        self.pilPosition = None
-        self.pilRadius = 0
         # the brightness of the image we last received
         self.brightness = brightness
         self.desiredBrightness = brightness
@@ -424,6 +422,12 @@ class ZoomableImage:
         self.ty = 0
         self.flip = flip and -1 or 1
         self.waitingForRead = False
+
+    def load(self, cziPath):
+        self.czi = loadImage(pathlib.Path(cziPath))
+        self.pil = None
+        self.pilPosition = None
+        self.pilRadius = 0
 
     def pixelSize(self):
         """
@@ -1113,10 +1117,29 @@ class ManimalApplication(tk.Frame):
         self.fixed = None
         self.overviewSliderId = None
         if fixed:
+            fixeds = glob.glob(os.path.expanduser(fixed))
+            fixeds.sort()
+            if len(fixeds) == 0:
+                print('No such file:', fixed)
+                exit(2)
             self.fixed = ZoomableImage(
-                pathlib.Path(fixed),
+                pathlib.Path(fixeds[0]),
                 brightness=fixed_brightness
             )
+            if len(fixeds) > 1:
+                self.fixeds = {
+                    os.path.splitext(os.path.basename(f))[0] : f
+                    for f in fixeds
+                }
+                ks = list(self.fixeds.keys())
+                self.fixedImageLabel = ttk.Label(self.controls1, text='image:')
+                self.fixedImageLabel.pack(side='left')
+                self.fixedImageSelector = ttk.Combobox(
+                    self.controls1, values=ks, state='readonly'
+                )
+                self.fixedImageSelector.pack(side='left')
+                self.fixedImageSelector.set(ks[0])
+                self.fixedImageSelector.bind('<<ComboboxSelected>>', self.setFixedImage)
             centreFixed = self.fixed.centre()
             self.screen.setTranslation(centreFixed[0], centreFixed[1])
             self.overviewCanvas = tk.Canvas(self, bg='#001')
@@ -1191,7 +1214,7 @@ class ManimalApplication(tk.Frame):
                 )
             else:
                 self.screen.setTranslation(centreSliding[0], centreSliding[1])
-            text = 'brightness (sliding)' if fixed else 'brightness'
+            text = 'brightness (sliding):' if fixed else 'brightness:'
             label = tk.Label(self.controls1, text=text)
             label.pack(side='left')
             self.slidingBrightnessSlider = tk.Scale(
@@ -1204,7 +1227,7 @@ class ManimalApplication(tk.Frame):
             self.slidingBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.slidingBrightnessSlider.pack(side='left')
         if fixed:
-            text = 'brightness (fixed)' if sliding else 'brightness'
+            text = 'brightness (fixed):' if sliding else 'brightness:'
             label = tk.Label(self.controls1, text=text)
             label.pack(side='left')
             self.fixedBrightnessSlider = tk.Scale(
@@ -1293,6 +1316,11 @@ class ManimalApplication(tk.Frame):
         self.updateCanvas()
         self.updateCounter()
         self.after(1000, self.tick)
+
+    def setFixedImage(self, event):
+        cziPath = self.fixeds[event.widget.get()]
+        self.fixed.load(cziPath)
+        self.update()
 
     def setFixedBrightness(self, brightness):
         self.fixed.setBrightness(brightness)
@@ -1588,7 +1616,12 @@ parser.add_argument(
 parser.add_argument(
     '-f',
     '--fixed',
-    help='fixed image (.czi file) if desired',
+    help=(
+        'Fixed image (.czi file) if desired. Use an asterisk to load'
+        + ' multiple files which the user can switch between (on Mac'
+        + ' or Linux asterisks need to be backslash-escaped or put'
+        + ' in quotes)'
+    ),
     required=False,
     dest='fixed'
 )
