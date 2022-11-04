@@ -307,6 +307,22 @@ class Screen:
         self.panX -= d[0]
         self.panY -= d[1]
 
+    def setMoveTarget(self, dx, dy):
+        """
+        Sets the number of screenfulls we want to move by. The actual
+        movement happens when calling moveTowardsTarget.
+        """
+        dx = int(dx * self.width() * self.scale + 0.5)
+        dy = int(dy * self.height() * self.scale + 0.5)
+        self.panDX = dx
+        self.panDY = dy
+        self.panStartX = self.panX
+        self.panStartY = self.panY
+
+    def moveTowardsTarget(self, interpolation):
+        self.panX = self.panStartX + self.panDX * interpolation
+        self.panY = self.panStartY + self.panDY * interpolation
+
     def zoomChange(self, scale, x, y):
         # let p0 be the initial pan point and s0 the original zoom, with m the
         # clicked point relative to the centre of the canvas (in screen pixels).
@@ -831,6 +847,7 @@ class SaveDialog(tk.Toplevel):
         self.bind('<Return>', lambda e: self.save())
         self.bind('s', lambda e: self.save())
         self.bind('d', lambda e: self.dont())
+        self.focus_set()
     def destroy(self):
         super().destroy()
     def save(self, event=None):
@@ -1084,12 +1101,20 @@ class ManimalApplication(tk.Frame):
         self.counter.pack(side='right')
         self.saveButton = tk.Button(self.controls2, text='Save', command = self.save)
         self.saveButton.pack(side='right')
-        master.bind('s', lambda e: self.save())
+        master.bind('<Control-s>', lambda e: self.save())
         self.closeButton = tk.Button(self.controls2, text='Close', command = self.maybeQuit)
         self.closeButton.pack(side='right')
         master.bind('<Escape>', lambda e: self.maybeQuit())
         self.canvas = tk.Canvas(self)
         self.canvas.grid(column=0, row=0, sticky='nsew')
+        master.bind('<Left>', self.moveLeft)
+        master.bind('a', self.moveLeft)
+        master.bind('<Right>', self.moveRight)
+        master.bind('d', self.moveRight)
+        master.bind('<Up>', self.moveUp)
+        master.bind('w', self.moveUp)
+        master.bind('<Down>', self.moveDown)
+        master.bind('s', self.moveDown)
         self.screen = Screen(self.canvas)
         self.overview = None
         self.screens = [self.screen]
@@ -1319,8 +1344,9 @@ class ManimalApplication(tk.Frame):
 
     def setFixedImage(self, event):
         cziPath = self.fixeds[event.widget.get()]
-        self.fixed.load(cziPath)
         self.update()
+        self.fixed.load(cziPath)
+        self.updateCache()
 
     def setFixedBrightness(self, brightness):
         self.fixed.setBrightness(brightness)
@@ -1444,15 +1470,18 @@ class ManimalApplication(tk.Frame):
         self.pins.createPoiPin(x=wx, y=wy)
         self.updateCanvas()
         self.updateCounter()
+        self.canvas.focus_set()
 
     def dragStartAddRegPoint(self, x, y):
         (wx, wy) = self.screen.toWorld(x, y)
         self.pins.createRegPin(x=wx, y=wy)
         self.updateCanvas()
         self.updateCounter()
+        self.canvas.focus_set()
 
     def dragStartSlide(self, x, y):
         self.sliding.dragStart(self.screen, x, y)
+        self.canvas.focus_set()
 
     def dragSlide(self, x, y):
         self.sliding.dragMove(self.screen, x, y)
@@ -1464,6 +1493,7 @@ class ManimalApplication(tk.Frame):
         self.updateCanvas()
 
     def dragStart(self, x, y, funcName):
+        self.canvas.focus_set()
         self.screen.dragStart(x, y)
         p = self.pins.getRegPin(self.screen, x, y)
         if not p:
@@ -1515,7 +1545,29 @@ class ManimalApplication(tk.Frame):
             self.updateCanvas()
         else:
             self.mouseDragFunction[funcName](x, y)
-    
+
+    def startMove(self):
+        self.moveInterpolation = 0
+        self.doMove()
+    def doMove(self):
+        if self.moveInterpolation < 4:
+            self.after(50, self.doMove)
+        self.moveInterpolation += 1
+        self.screen.moveTowardsTarget(self.moveInterpolation / 4)
+        self.updateCanvas()
+    def moveLeft(self, e):
+        self.screen.setMoveTarget(-0.5, 0)
+        self.startMove()
+    def moveRight(self, e):
+        self.screen.setMoveTarget(0.5, 0)
+        self.startMove()
+    def moveUp(self, e):
+        self.screen.setMoveTarget(0, -0.5)
+        self.startMove()
+    def moveDown(self, e):
+        self.screen.setMoveTarget(0, 0.5)
+        self.startMove()
+
     def createCanvas(self):
         self.canvasImage = self.canvas.create_image(0, 0, anchor="nw")
 
