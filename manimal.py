@@ -55,15 +55,18 @@ class CsvLoader:
         self.headers = [strip_zen_nonsense(h) for h in rows[0].split(',')]
         self.rows = [r for r in rows[1:] if r.strip(',"')]
 
-    def headersAre(self, cshs):
+    def headersStartWith(self, cshs):
         """
         Returns True iff cshs (a comma-separated list of headers) matches
-        the actual headers.
+        the actual headers in those starting positions (more unspecified
+        headers than in cshs is OK, but fewer is not)
         """
         if not self.headers:
             return False
         hs = cshs.split(',')
-        return hs == self.headers
+        if len(self.headers) < len(hs):
+            return False
+        return hs == self.headers[0:len(hs)]
 
     def rowCount(self):
         return len(self.rows)
@@ -71,6 +74,9 @@ class CsvLoader:
     def generateRows(self):
         for r in self.rows:
             yield [c.strip('"') for c in r.split(',')]
+
+    def getHeaders(self):
+        return self.headers
 
 
 class ImageFile:
@@ -863,15 +869,17 @@ class SaveDialog(tk.Toplevel):
 class Pin:
     CHARACTER = 'i'
     TAG = 'pin'
-    def __init__(self, x=0, y=0, hidden=False):
+    def __init__(self, x=0, y=0, hidden=False, extra_fields=[]):
         """ (x, y) is the position in pixels """
         self.x = x
         self.y = y
         self.state = 'hidden' if hidden else 'normal'
         self.ids = {}
+        self.extra_fields = extra_fields
     def setPosition(self, x, y):
         self.x = x
         self.y = y
+        self.extra_fields = []
     def screenCoords(self, screen):
         return screen.fromWorld(self.x, self.y)
     def getId(self, screen):
@@ -893,16 +901,22 @@ class Pin:
         )
     def getName(self):
         return ""
+    def getExtras(self):
+        return self.extra_fields
+    def join(self, *args):
+        return ','.join(map(str, args))
     def renderCsvLine(self, image, **kwargs):
         scale = image.pixelSize()
         sx = self.x * scale
         sy = self.y * scale
         z = image.czi.surfaceZ(sx, sy)
-        print("{0},{1},{2},{3},{4}".format(
+        header_string = self.join(
             self.CHARACTER,
             sx, sy, z,
-            self.getName()
-        ), **kwargs)
+            self.getName(),
+            *self.getExtras()
+        )
+        print(header_string, **kwargs)
     def hide(self, *screens):
         for screen in screens:
             screen.hidePin(self.getId(screen))
@@ -959,6 +973,7 @@ class PinSet:
         self.unknownPois = []
         self.removed = []
         self._changed = False
+        self.csvHeaders = ['type', 'x', 'y', 'z', 'name']
     def changed(self):
         return self._changed
     def setChanged(self):
@@ -1013,41 +1028,35 @@ class PinSet:
         return len(self.regs)
     def load(self, image, fh):
         csv = CsvLoader(fh)
-        if not csv.headersAre('type,x,y,z,name'):
+        if not csv.headersStartWith('type,x,y,z,name'):
             raise Exception('Could not understand csv file')
+        self.csvHeaders = csv.getHeaders()
         self.pois = set([])
         self.pods = set([])
         self.regs = set([])
         self.unknownPois = []
         scale = image.pixelSize()
-        for (t,tx,ty,z,name) in csv.generateRows():
+        for (t,tx,ty,z,name,*extras) in csv.generateRows():
             x = float(tx) / scale
             y = float(ty) / scale
             pin = None
             if t == 'i':
                 if len(name) == 0:
-                    pin = self.createPoiPin(x=x, y=y)
+                    pin = self.createPoiPin(x=x, y=y, extra_fields=extras)
                 else:
-                    pin = self.createPodPin(name, x=x, y=y)
+                    pin = self.createPodPin(name, x=x, y=y, extra_fields=extras)
             elif t == 'r':
-                pin = self.createRegPin(x=x, y=y)
+                pin = self.createRegPin(x=x, y=y, extra_fields=extras)
             else:
-                self.unknownPois.append((t,tx,ty,z,name))
+                self.unknownPois.append((t,tx,ty,z,name,*extras))
         self._changed = False
     def save(self, image, **kwargs):
-        print('type,x,y,z,name', **kwargs)
-        for (t,x,y,z,name) in self.unknownPois:
-            print('{0},{1},{2},{3},{4}'.format(t,x,y,z,name), **kwargs)
-        scale = image.pixelSize()
-        for (k, pins) in [ ('r', self.regs), ('i', self.pods), ('i', self.pois) ]:
+        print(','.join(self.csvHeaders), **kwargs)
+        for fields in self.unknownPois:
+            print(','.join(fields), **kwargs)
+        for pins in [ self.regs, self.pods, self.pois ]:
             for pin in pins:
-                sx = pin.x * scale
-                sy = pin.y * scale
-                z = image.czi.surfaceZ(sx, sy)
-                print(
-                    "{0},{1},{2},{3},{4}".format(k, sx, sy, z, pin.getName()),
-                    **kwargs
-                )
+                pin.renderCsvLine(image, **kwargs)
         self._changed = False
     def allPins(self):
         maybe_axle = [] if self.axle is None else [self.axle]
