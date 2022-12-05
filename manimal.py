@@ -1211,6 +1211,7 @@ class ManimalApplication(tk.Frame):
                 self.overviewSliderId = self.overviewCanvas.create_polygon(
                     (0,0), fill='#445'
                 )
+                self.overviewCanvas.tag_raise('view', self.overviewSliderId)
         self.matrix_file = matrix_file
         if flip == 'auto':
             flip = bool(fixed)
