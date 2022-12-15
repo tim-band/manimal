@@ -10,13 +10,21 @@ Manual Image Alignment tool
 
 Manimal allows you to align two large CZI images by eye.
 
-Use a left-click drag to translate the sliding image around. Click the
-"Pin" button to get a pin, then click the image to place the pin.
-Left-click drags now rotate the sliding image around the pin. Click
-the "Pin" button again in order to return to translating the image.
+You can choose the functions of the left button and right button
+from the "left mouse button" and "right mouse button" menus.
+They will both be set to "move" when the program starts. This
+means that either a left button drag or a right button drag
+moves the entire image around. If you select "slide" for either
+button, then dragging with this button causes just the sliding
+image to move.
 
-Use a right-click drag to move the enitre view around, or roll
-the scroll wheel to zoom in and out.
+At the start, this sliding movement will be translation. Click the
+"Pin" button to get a pin, then click the image to place the pin.
+Dragging with the chosen sliding button now rotate the sliding
+image around the pin. Click the "Pin" button again in order to
+return to translating the image.
+
+Roll the scroll wheel to zoom in and out.
 
 Click "OK" to output the matrix mapping fixed image points
 (in micrometers) to sliding image points (in micrometers)
@@ -27,7 +35,7 @@ Click "cancel" to close the tool without outputting the matrix.
 The tool cannot currently cope with non-square pixels, or
 fixed and sliding images with different scalings.
 
-The tool can cope with multi-gigabyte images.
+The tool can cope with multi-gigabyte images in CZI files.
 
 The output file specified by `-m` or `--matrix` will be filled with
 the matrix for transforming the fixed image co-ordinates to
@@ -42,12 +50,13 @@ standard out.
 ./manimal.py -f image.czi -p poi.csv
 ```
 
-Scroll around the image as above with right drag and scroll wheel. You
-can also use left drag if "Move" is selected at the bottom. Select
-"POI" and you can start left-clicking to add (white) Point Of Interest
-markers. Select "Reg. point" to add (yellow) Registration Point
-markers. Markers can be dragged around in any mode. Markers
-dragged outside the image window are deleted.
+Scroll around the image as above with dragging the moust and
+rolling the scroll wheel. Select "POI" for one of the mouse button
+functions and you can start clicking this button to add (white)
+Point Of Interest markers. Select "Reg. point" to add (yellow)
+Registration Point markers. Markers can be dragged around
+in any mode. Markers dragged outside the image window are
+deleted.
 
 Click "OK" to output a table of markers, one per line in the form:
 
@@ -68,8 +77,10 @@ it would be trivial to support.
 ./manimal.py -a image.czi -p poi.csv -m matrix.csv
 ```
 
-Move the image with right drag (or left drag in 'Move' mode). Add
-new pois or reg points, or drag existing ones as above.
+Move the image as in "Align by Eye" above, by choosing the
+"slide" option for one of the mouse buttons and dragging with
+this mouse button. Choose "Add POI" (perhaps for the other
+mouse button) if you want to add any more POIs.
 
 The matrix of the transformation from the starting position of
 the image to its final position is written into the file given by the

@@ -1650,7 +1650,11 @@ parser = argparse.ArgumentParser(
     description= 'MANual IMage ALigner: '
     + 'a GUI tool for manually aligning images with each other, '
     + 'finding points of interest, '
-    + 'or aligning an image with existing points of interest.'
+    + 'or aligning an image with existing points of interest. '
+    + 'Manimal Copyright (C) 2022 Tim Band. '
+    + 'This program is free software, and comes with '
+    + 'ABSOLUTELY NO WARRANTY. You may distribute it under '
+    + 'the terms of the Gnu Public License version 3.'
 )
 parser.add_argument(
     '-p',
