@@ -115,6 +115,54 @@ class PillowImageFile(ImageFile):
         self.im.close()
         super().close()
 
+class SurfaceEstimator:
+    # Possibilities for orders of x and y to use
+    # for estimation. So, for each `o` in `orders`
+    # the independent variables to the linear
+    # regression are:
+    # 1, y, y^2 ... y^o[0]
+    # x, xy, xy^2 ... xy^o[1]
+    # x^2, x^2y, x^2y^2 ... x^2y^o[2]
+    # ...
+    # x^(len(o)-1) ... x^(len(o)-1)y^o[len(o) - 1]
+    # We are using the ones we assume Zeiss uses
+    # in its tile experiment support points
+    # functionality.
+    orders = [
+        [5, 5, 5, 4, 3],  # biquartic but orders < 7 only
+        [4, 4, 4, 3],  # bicubic but orders < 6 only
+        [3, 3, 3],  # biquadratic
+        [2, 2],  # bilinear
+        [1],  # horizontal
+    ]
+    def choose_order(self, point_count):
+        for o in self.orders:
+            if sum(o) <= point_count:
+                return o
+        raise Exception('Internal Error: no surface to estimate')
+    def generate_row(self, xy):
+        x = xy[0]
+        y = xy[1]
+        xn = 1
+        row = []
+        for y_order in self.order:
+            xnyn = xn
+            for n in range(y_order):
+                row.append(xnyn)
+                xnyn *= y
+            xn *= x
+        return row
+    def __init__(self, coords):
+        point_count = len(coords)
+        self.order = self.choose_order(point_count)
+        ins = np.array(list(map(self.generate_row, coords)))
+        outs = np.array(list(map(lambda xyz: xyz[2], coords)))
+        m1 = np.linalg.inv(ins.T @ ins)
+        self.coefficients = m1 @ ins.T @ outs
+    def getZ(self, x, y):
+        vs = np.array(self.generate_row([x, y]))
+        return np.dot(self.coefficients, vs)
+
 class CziImageFile(ImageFile):
     def __init__(self, path):
         super().__init__(path)
@@ -130,24 +178,38 @@ class CziImageFile(ImageFile):
         if xscale != yscale:
             raise Exception("Cannot handle non-square pixels yet, sorry!")
         self.pixelSize = xscale
+        surface_points = czi.meta.findall(
+            'Metadata/Experiment/ExperimentBlocks/'
+            + 'AcquisitionBlock[@IsActivated="true"]/SubDimensionSetups/'
+            + 'RegionsSetup[@IsActivated="true"]/SampleHolder/'
+            + 'TileRegions/TileRegion/SupportPoints/'
+            + 'SupportPoint'
+        )
         focus_actions = czi.meta.findall(
             'Metadata/Information/TimelineTracks/TimelineTrack/TimelineElements/TimelineElement/EventInformation/FocusAction'
         )
+        surface = []
+        if surface_points:
+            surface += [
+                [ float(a.find(tag).text) for tag in ['X', 'Y', 'Z'] ]
+                for a in surface_points
+            ]
         if focus_actions:
             def focus_action_success(e):
                 r = e.find('Result')
                 return r != None and r.text == 'Success'
-            self.surface = [
+            surface += [
                 [ float(a.find(tag).text) for tag in ['X', 'Y', 'ResultPosition'] ]
                 for a in focus_actions
                 if focus_action_success(a)
             ]
-        else:
+        if len(surface) == 0:
             overall_z_element = (
                 czi.meta.find('Metadata/Experiment/ExperimentBlocks/AcquisitionBlock/SubDimensionSetups/RegionsSetup/SampleHolder/TileRegions/TileRegion/Z')
                 or czi.meta.find('Metadata/HardwareSetting/ParameterCollection[@Id="MTBFocus"]/Position')
             )
-            self.surface = [float(overall_z_element.text)]
+            surface = [[0, 0, float(overall_z_element.text)]]
+        self.surface = SurfaceEstimator(surface)
         self.imageBits = int(czi.meta.find('Metadata/Information/Image/ComponentBitCount').text)
 
     def readImage(self, queue, radius : int, scale, cx : int, cy : int, brightness: float):
@@ -190,26 +252,7 @@ class CziImageFile(ImageFile):
         Returns an approximate z position from the x, y positions
         provided (each in micrometers)
         """
-        # For now, we'll just find the closest known surface point.
-        # An alternative might be to find the closest known points
-        # in the NW, NE, SE, SW quadrants (which will define a
-        # quadrilateral that definitely includes the point), then
-        # arbitrarily divide it by the line between the SW and NE
-        # points and choose the triangle the point is actually in,
-        # then interpolate between those three points.
-        x0 = self.surface[0][0] - x
-        y0 = self.surface[0][1] - y
-        dist2 = x0 * x0 + y0 * y0
-        best = self.surface[0][2]
-        for i in range(1,len(self.surface)):
-            p = self.surface[i]
-            xi = p[0] - x
-            yi = p[1] - y
-            d2 = xi * xi + yi * yi
-            if d2 < dist2:
-                dist2 = d2
-                best = p[2]
-        return best
+        return self.surface.getZ(x, y)
 
     def getBbox(self):
         return self.bbox
@@ -869,16 +912,21 @@ class SaveDialog(tk.Toplevel):
 class Pin:
     CHARACTER = 'i'
     TAG = 'pin'
-    def __init__(self, x=0, y=0, hidden=False, extra_fields=[]):
-        """ (x, y) is the position in pixels """
+    def __init__(self, x=0, y=0, z=None, hidden=False, extra_fields=[]):
+        """
+        (x, y) is the position in pixels.
+        z is the original z text, or None.
+        """
         self.x = x
         self.y = y
+        self.z = z
         self.state = 'hidden' if hidden else 'normal'
         self.ids = {}
         self.extra_fields = extra_fields
     def setPosition(self, x, y):
         self.x = x
         self.y = y
+        self.z = None
         self.extra_fields = []
     def screenCoords(self, screen):
         return screen.fromWorld(self.x, self.y)
@@ -909,7 +957,11 @@ class Pin:
         scale = image.pixelSize()
         sx = self.x * scale
         sy = self.y * scale
-        z = image.czi.surfaceZ(sx, sy)
+        z = self.z
+        if type(z) is str:
+            z = z.strip()
+        if z is None or z == '':
+            z = image.czi.surfaceZ(sx, sy)
         header_string = self.join(
             self.CHARACTER,
             sx, sy, z,
@@ -928,26 +980,26 @@ class Pin:
             screen.deletePin(self.getId(screen))
 
 class PoiPin(Pin):
-    TAG = 'poi'
     """ Point of interest still not captured as a Z-stack """
+    TAG = 'poi'
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-class PodPin(Pin):
-    TAG = 'pod'
-    """ Point of interest that has been captured """
+class NamedPin(Pin):
     def __init__(self, name, **kwargs):
         super().__init__(**kwargs)
         self.name = name
     def getName(self):
         return self.name
 
-class RegPin(Pin):
-    TAG = 'reg'
+class PodPin(NamedPin):
+    """ Point of interest that has been captured """
+    TAG = 'pod'
+
+class RegPin(NamedPin):
     """ Registration point """
+    TAG = 'reg'
     CHARACTER = 'r'
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
 
 class AxlePin(Pin):
     TAG = 'axle'
@@ -1042,11 +1094,11 @@ class PinSet:
             pin = None
             if t == 'i':
                 if len(name) == 0:
-                    pin = self.createPoiPin(x=x, y=y, extra_fields=extras)
+                    pin = self.createPoiPin(x=x, y=y, z=z, extra_fields=extras)
                 else:
-                    pin = self.createPodPin(name, x=x, y=y, extra_fields=extras)
+                    pin = self.createPodPin(name, x=x, y=y, z=z, extra_fields=extras)
             elif t == 'r':
-                pin = self.createRegPin(x=x, y=y, extra_fields=extras)
+                pin = self.createRegPin(x=x, y=y, z=z, name=name, extra_fields=extras)
             else:
                 self.unknownPois.append((t,tx,ty,z,name,*extras))
         self._changed = False
