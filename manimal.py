@@ -1229,6 +1229,8 @@ class ManimalApplication(tk.Frame):
             centreFixed = self.fixed.centre()
             self.screen.setTranslation(centreFixed[0], centreFixed[1])
             self.overviewCanvas = tk.Canvas(self, bg='#001')
+            self.overviewCanvas.bind("<Button-1>", self.goOverview)
+            self.overviewCanvas.bind("<B1-Motion>", self.goOverview)
             self.overviewCanvas.grid(
                 column=0, row=0, sticky='nsew'
             )
@@ -1641,6 +1643,11 @@ class ManimalApplication(tk.Frame):
         scaleBarWidth = 300
         maxMicrons = pixelSize * scaleBarWidth
         self.scaleBar.show(scaleBarWidth, maxMicrons)
+
+    def goOverview(self, e):
+        p = self.overview.toWorld(e.x, e.y)
+        self.screen.setTranslation(*p)
+        self.updateCanvas()
 
     def updateOverviewCanvas(self):
         if self.overviewSliderId is not None:

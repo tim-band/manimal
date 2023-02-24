@@ -1,7 +1,7 @@
 from distutils.core import setup
 setup(
   name='manimal',
-  version='1.0.3',
+  version='1.1',
   py_modules=['manimal'],
   description='Tool for MANual IMage ALignment',
   long_description='Align .jpg or .czi (Carl Zeiss image) files, and/or choose Points of Interest on such an image',
