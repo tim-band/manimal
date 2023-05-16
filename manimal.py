@@ -7,10 +7,9 @@ import math
 import numpy as np
 import os
 import pathlib
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageTk
+from PIL import Image, ImageEnhance, ImageTk
 import queue
 import re
-import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -569,6 +568,31 @@ class ZoomableImage:
             [c0[0], c1[0], c2[0] * scale],
             [c0[1], c1[1], c2[1] * scale]
         ]
+
+    def setMicrometerMatrix(self, x0, y0, tx, x1, y1, ty):
+        """
+        Sets the mapping to this image (in micrometers) from world
+        co-ordinates.
+        """
+        # We need to decompose this into Translate + Rotate * Flip * ImageVector
+        # But this is the inverse of that!
+        # Flip(s) = I if s = 1 or (-1, 0 \ 0, 1) if s = -1
+        # Rotate(a) = (cos(a), sin(a) \ -sin(a), cos(a))
+        # inv(Flip(s)*Rotate(a)) = inv(Rotate(a))*inv(Flip(s)) = Rotate(-a)*Flip(s)
+        # so we have: v = t + FRw <=> w = inv(FR)(v-t) = inv(R)F(v-t) = -inv(R)Ft + inv(R)Fv
+        # So first we determine which F we have, and work out R
+        cross = x0 * y1 - x1 * y0
+        if cross < 0:
+            self.flip = -1
+            x0 = -x0
+            y0 = -y0
+            tx = -tx
+        else:
+            self.flip = 1
+        self.angle = -math.atan2(y0, x0)
+        scale = self.pixelSize()
+        self.tx = (-x0 * tx + y0 * ty) / scale
+        self.ty = (-x0 * ty - y0 * tx) / scale
 
     def toScreen(self, screen: Screen, x, y):
         """
@@ -1266,7 +1290,6 @@ class ManimalApplication(tk.Frame):
                     (0,0), fill='#445'
                 )
                 self.overviewCanvas.tag_raise('view', self.overviewSliderId)
-        self.matrix_file = matrix_file
         if flip == 'auto':
             flip = bool(fixed)
         elif flip == 'yes':
@@ -1328,6 +1351,7 @@ class ManimalApplication(tk.Frame):
             )
             self.fixedBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.fixedBrightnessSlider.pack(side='left')
+        self.loadMatrix(matrix_file)
         tk.Label(self.controls2, text='left mouse button:').pack(side='left')
         self.leftClickFunctionSelector = ttk.Combobox(
             self.controls2, values=functions, state='readonly'
@@ -1456,6 +1480,40 @@ class ManimalApplication(tk.Frame):
         print('x,y,t', **kwargs)
         for row in self.sliding.getMicrometerMatrix():
             print(','.join(map(str, row)), **kwargs)
+
+    def loadMatrix(self, matrix_file):
+        if not self.sliding:
+            self.matrix_file = None
+            return
+        self.matrix_file = matrix_file
+        if not self.matrix_file:
+            return
+        try:
+            with open(self.matrix_file, 'r') as fh:
+                csv = CsvLoader(fh)
+                if not csv.headersStartWith('x,y,t'):
+                    print('Matrix file does not seem to be a matrix file.')
+                    print('(should be a CSV with headers x, y, t)')
+                    return
+                rows = csv.generateRows()
+                try:
+                    row0 = next(rows)
+                    row1 = next(rows)
+                except StopIteration:
+                    print('Matrix file does not have two rows')
+                    return
+                self.sliding.setMicrometerMatrix(
+                    float(row0[0]),
+                    float(row0[1]),
+                    float(row0[2]),
+                    float(row1[0]),
+                    float(row1[1]),
+                    float(row1[2])
+                )
+        except FileNotFoundError:
+            # Matrix will be output, but it does not exist yet.
+            # This is fine.
+            return
 
     def save(self):
         if self.poi_file:

@@ -37,11 +37,14 @@ fixed and sliding images with different scalings.
 
 The tool can cope with multi-gigabyte images in CZI files.
 
-The output file specified by `-m` or `--matrix` will be filled with
-the matrix for transforming the fixed image co-ordinates to
-the sliding image co-ordinated (in micrometers).
+The file specified by `-m` or `--matrix` is the matrix for
+transforming the fixed image co-ordinates to the sliding image
+co-ordinated (in micrometers). If this file already exists
+from a previous run of Manimal you will begin with the sliding
+image already transformed like this. In any case, this file
+will be filled with the transformation on exit.
 
-If not such output file is specified the matrix will be output on
+If no such output file is specified the matrix will be output on
 standard out.
 
 ## Find Points of Interest
