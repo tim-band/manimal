@@ -502,6 +502,12 @@ class ZoomableImage:
             return s * 1e6
         return 1
 
+    def xFlip(self):
+        """
+        Returns -1 if this image is flipped, 1 otherwise.
+        """
+        return self.flip
+
     def setAngle(self, angle):
         self.angle = angle
 
@@ -901,37 +907,60 @@ class ScaleBar:
             self.text, text='{0} {1}'.format(v, units), state='normal'
         )
 
-class SaveDialog(tk.Toplevel):
-    def __init__(self, parent, saveFn, quitFn):
+class ConfirmationDialog(tk.Toplevel):
+    def __init__(self, parent, title, label, do, dont=None, cancel=None):
         super().__init__(parent)
-        self.saveFn = saveFn
-        self.quitFn = quitFn
-        self.title('Save changes?')
-        text = tk.Label(self, text='Do you want to save your changes?')
+        self.title(title)
+        text = tk.Label(self, text=label)
         text.grid(row=0, column=0, columnspan=3)
-        save = tk.Button(self, text='Save', command=self.save)
-        save.grid(row=1, column=0)
-        dont = tk.Button(self, text="Don't save", command=self.dont)
-        dont.grid(row=1, column=1)
-        cancel = tk.Button(self, text='Cancel', command=self.cancel)
-        cancel.grid(row=1, column=2)
+        column = 0
+        def getCommand(f):
+            def com(e=None):
+                if f:
+                    f()
+                self.destroy()
+            return com
+        for action in [a for a in [do, dont, cancel] if a]:
+            fn = action.get('fn')
+            btn = tk.Button(
+                self,
+                text=action['text'],
+                command=getCommand(fn)
+            )
+            btn.grid(row=1, column=column)
+            column += 1
+            if 'keys' in action:
+                for k in action['keys']:
+                    self.bind(k, fn)
         self.grid()
-        self.bind('<Escape>', lambda e: self.cancel())
-        self.bind('<Return>', lambda e: self.save())
-        self.bind('s', lambda e: self.save())
-        self.bind('d', lambda e: self.dont())
         self.focus_set()
     def destroy(self):
         super().destroy()
-    def save(self, event=None):
-        self.saveFn()
-        self.quitFn()
-        self.destroy()
-    def dont(self, event=None):
-        self.quitFn()
-        self.destroy()
-    def cancel(self, event=None):
-        self.destroy()
+
+class SaveDialog(ConfirmationDialog):
+    def __init__(self, parent, saveFn, quitFn):
+        def saveAndQuit():
+            saveFn()
+            quitFn()
+        super().__init__(
+            parent,
+            'Save changes?',
+            'Do you want to save your changes?',
+            { 'text': 'Save', 'fn': saveAndQuit, 'keys': ['<Return>', 's'] },
+            { 'text': "Don't save", 'fn': quitFn, 'keys': ['d']},
+            { 'text': 'Cancel', 'keys': ['<Escape>']}
+        )
+
+class ResetDialog(ConfirmationDialog):
+    def __init__(self, parent, resetFn):
+        super().__init__(
+            parent,
+            'Reset alignment?',
+            'Do you want to reset the alignment to straight and centre-aligned?',
+            { 'text': 'Reset', 'fn': resetFn, 'keys': ['<Return>'] },
+            None,
+            { 'text': 'Cancel', 'keys': ['<Escape>']}
+        )
 
 class Pin:
     CHARACTER = 'i'
@@ -1175,7 +1204,6 @@ class ManimalApplication(tk.Frame):
         mag_size=None
     ):
         super().__init__(master)
-        self.changed = False
         self.grid(row=0, column=0, sticky='nsew')
         self.grid_columnconfigure(0, weight=1)
         self.controls1 = tk.Canvas(self)
@@ -1190,6 +1218,9 @@ class ManimalApplication(tk.Frame):
         self.closeButton = tk.Button(self.controls2, text='Close', command = self.maybeQuit)
         self.closeButton.pack(side='right')
         master.bind('<Escape>', lambda e: self.maybeQuit())
+        if sliding:
+            self.resetButton = tk.Button(self.controls2, text='Reset', command = self.confirmResetAlignment)
+            self.resetButton.pack(side='right')
         self.canvas = tk.Canvas(self)
         self.canvas.grid(column=0, row=0, sticky='nsew')
         master.bind('<Left>', self.moveLeft)
@@ -1296,7 +1327,6 @@ class ManimalApplication(tk.Frame):
             flip = True
         else:
             flip = False
-        xflip = -1 if flip else 1
         self.pins = PinSet()
         self.pinCoords = {}
         self.pinNames = {}
@@ -1318,14 +1348,7 @@ class ManimalApplication(tk.Frame):
             self.sliding = ZoomableImage(
                 pathlib.Path(sliding), flip=flip
             )
-            centreSliding = self.sliding.centre()
-            if fixed:
-                self.sliding.setTranslation(
-                    centreFixed[0] - xflip * centreSliding[0],
-                    centreFixed[1] - centreSliding[1]
-                )
-            else:
-                self.screen.setTranslation(centreSliding[0], centreSliding[1])
+            self.resetAlignment()
             text = 'brightness (sliding):' if fixed else 'brightness:'
             label = tk.Label(self.controls1, text=text)
             label.pack(side='left')
@@ -1404,7 +1427,27 @@ class ManimalApplication(tk.Frame):
         self.updateCanvas()
         self.updateCounter()
         self.loadPoisIfAvailable(self.poi_file)
+        self.changed = False
         self.tick()
+
+    def resetAlignment(self):
+        centreSliding = self.sliding.centre()
+        if self.fixed:
+            centreFixed = self.fixed.centre()
+            xflip = self.sliding.xFlip()
+            self.sliding.setTranslation(
+                    centreFixed[0] - xflip * centreSliding[0],
+                    centreFixed[1] - centreSliding[1]
+                )
+        else:
+            self.screen.setTranslation(centreSliding[0], centreSliding[1])
+        self.sliding.setAngle(0)
+        self.changed = True
+
+    def confirmResetAlignment(self):
+        self.wait_window(
+            ResetDialog(self, self.resetAlignment)
+        )
 
     def updateCache(self):
         if self.fixed:
