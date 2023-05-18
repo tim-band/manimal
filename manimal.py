@@ -908,7 +908,18 @@ class ScaleBar:
         )
 
 class ConfirmationDialog(tk.Toplevel):
-    def __init__(self, parent, title, label, do, dont=None, cancel=None):
+    def __init__(self, parent, title, label, *args):
+        """
+        Confirmation dialog with parent, title, description and
+        the remaining arguments are dicts describing the buttons
+        the dialog needs, which have the following keys:
+        'fn' (optional) is a function to be called when the button
+        is pressed, 'text' is the text the button should have, and
+        'keys' (optional) is a list of key bindings the button
+        should have. Each button dismisses the dialog, so if 'fn'
+        is not provided then the corresponding button is just a
+        cancel button.
+        """
         super().__init__(parent)
         self.title(title)
         text = tk.Label(self, text=label)
@@ -920,7 +931,7 @@ class ConfirmationDialog(tk.Toplevel):
                     f()
                 self.destroy()
             return com
-        for action in [a for a in [do, dont, cancel] if a]:
+        for action in args:
             fn = action.get('fn')
             btn = tk.Button(
                 self,
@@ -958,7 +969,6 @@ class ResetDialog(ConfirmationDialog):
             'Reset alignment?',
             'Do you want to reset the alignment to straight and centre-aligned?',
             { 'text': 'Reset', 'fn': resetFn, 'keys': ['<Return>'] },
-            None,
             { 'text': 'Cancel', 'keys': ['<Escape>']}
         )
 
@@ -1442,6 +1452,7 @@ class ManimalApplication(tk.Frame):
         else:
             self.screen.setTranslation(centreSliding[0], centreSliding[1])
         self.sliding.setAngle(0)
+        self.removeAxlePin()
         self.changed = True
 
     def confirmResetAlignment(self):
