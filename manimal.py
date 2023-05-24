@@ -516,7 +516,10 @@ class ZoomableImage:
         self.ty = y
 
     def setBrightness(self, brightness):
-        self.desiredBrightness = math.pow(10.0, float(brightness) / 10.0)
+        if brightness is None:
+            self.desiredBrightness = 0
+        else:
+            self.desiredBrightness = math.pow(10.0, float(brightness) / 10.0)
 
     def centre(self):
         """
@@ -655,6 +658,7 @@ class ZoomableImage:
         x = max(bbox.x + cacheRadius, min(bbox.x + bbox.w - cacheRadius, x))
         y = max(bbox.y + cacheRadius, min(bbox.y + bbox.h - cacheRadius, y))
         # if we are not within the old radius, request a new cache update
+        brightnessRequested = max(1, self.desiredBrightness)
         magnification = self.scale / screen.scale
         if (self.pilPosition == None
                 or magnification < 0.45
@@ -663,14 +667,14 @@ class ZoomableImage:
                 or y - radius < self.pilPosition[1]
                 or self.pilPosition[0] + self.pilPosition[2] < x + radius
                 or self.pilPosition[1] + self.pilPosition[3] < y + radius
-                or self.brightness != self.desiredBrightness):
+                or self.brightness != brightnessRequested):
             requestQueue.put(ImageReadRequest(
                 self,
                 cacheRadius,
                 screen.scale,
                 x,
                 y,
-                self.desiredBrightness
+                brightnessRequested
             ))
             self.waitingForRead = True
 
@@ -1362,27 +1366,17 @@ class ManimalApplication(tk.Frame):
             text = 'brightness (sliding):' if fixed else 'brightness:'
             label = tk.Label(self.controls1, text=text)
             label.pack(side='left')
-            self.slidingBrightnessSlider = tk.Scale(
-                self.controls1,
-                length=100, from_=-6, to=24, resolution=1,
-                orient='horizontal',
-                showvalue=False,
-                command=self.setSlidingBrightness
+            self.slidingBrightnessSlider = self.makeBrightnessSlider(
+                -6, 21, self.setSlidingBrightness, fixed_brightness
             )
-            self.slidingBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.slidingBrightnessSlider.pack(side='left')
         if fixed:
             text = 'brightness (fixed):' if sliding else 'brightness:'
             label = tk.Label(self.controls1, text=text)
             label.pack(side='left')
-            self.fixedBrightnessSlider = tk.Scale(
-                self.controls1,
-                length=100, from_=-6, to=24, resolution=1,
-                orient='horizontal',
-                showvalue=False,
-                command=self.setFixedBrightness
+            self.fixedBrightnessSlider = self.makeBrightnessSlider(
+                -6, 21, self.setFixedBrightness, fixed_brightness
             )
-            self.fixedBrightnessSlider.set(10.0 * math.log10(fixed_brightness))
             self.fixedBrightnessSlider.pack(side='left')
         self.loadMatrix(matrix_file)
         tk.Label(self.controls2, text='left mouse button:').pack(side='left')
@@ -1439,6 +1433,22 @@ class ManimalApplication(tk.Frame):
         self.loadPoisIfAvailable(self.poi_file)
         self.changed = False
         self.tick()
+
+    def makeBrightnessSlider(self, from_, to, command, default_dB=None, resolution=1):
+        black = from_ - resolution
+        blackstr = str(black)
+        def setBrightness(v):
+            command(None if v == blackstr else v)
+        slider = tk.Scale(
+            self.controls1,
+            length=100, from_=black, to=to, resolution=resolution,
+            orient='horizontal',
+            showvalue=False,
+            command=setBrightness
+        )
+        if default_dB is not None:
+            slider.set(10.0 * math.log10(default_dB))
+        return slider
 
     def resetAlignment(self):
         centreSliding = self.sliding.centre()
